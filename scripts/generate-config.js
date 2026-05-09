@@ -19,11 +19,15 @@ if (!campaignSlug) {
 // Keep slugs stable — they appear in URLs and KV keys.
 const ROSTERS = {
   'solar-exits': [
-    { slug: 'mauricio', name: 'Mauricio',          defaultTz: 'America/Los_Angeles' },
-    { slug: 'elle',     name: 'Elle (Taylor)',     defaultTz: 'America/Los_Angeles' },
-    { slug: 'ej',       name: 'EJ Rep Exits',      defaultTz: 'America/Chicago' },
-    { slug: 'igor',     name: 'Igor Godoroja',     defaultTz: 'America/New_York' },
-    { slug: 'brooke',   name: 'Brooke',            defaultTz: 'America/Chicago' },
+    { slug: 'mauricio',  name: 'Mauricio Betancourt', defaultTz: 'America/Los_Angeles' },
+    { slug: 'elle',      name: 'Elle Haskin',         defaultTz: 'America/Los_Angeles' },
+    { slug: 'ej',        name: 'EJ Green',            defaultTz: 'America/Chicago' },
+    { slug: 'igor',      name: 'Igor Godoroja',       defaultTz: 'America/New_York' },
+    { slug: 'brooke',    name: 'Brooke Russell',      defaultTz: 'America/Chicago' },
+    { slug: 'jared',     name: 'Jared Curtis',        defaultTz: 'America/Chicago' },
+    { slug: 'dpena',     name: 'Daniel Pena',         defaultTz: 'America/Chicago' },
+    { slug: 'draines',   name: 'Daniel Raines',       defaultTz: 'America/Chicago' },
+    { slug: 'alexandra', name: 'Alexandra Skouzes',   defaultTz: 'America/Chicago' },
   ],
 };
 
