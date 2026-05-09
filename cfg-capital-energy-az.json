@@ -1,0 +1,25 @@
+{
+  "name": "capital-energy-az",
+  "displayName": "Capital Energy AZ",
+  "visibleHours": [
+    6,
+    23
+  ],
+  "masterKeyHash": "b01bf629444d598c5dd91a0d76c609918e24bc42be1c68805bf04647999842a7",
+  "adminCodeHash": "6946df2855fafc3cb45fb7f1ad50ce14116f5feca1a2998461259cd8148c73f8",
+  "closers": [
+    {
+      "slug": "dayne",
+      "name": "Dayne Hall",
+      "defaultTz": "America/Phoenix",
+      "pinHash": "f734ece06df062dac952da9cb07f7d6da5d01e32c815b22becde180a5ef5f41a"
+    },
+    {
+      "slug": "thomas",
+      "name": "Thomas Quist",
+      "defaultTz": "America/Phoenix",
+      "pinHash": "66951832f143a791fefa3ee61b869e26fcf5931d0cd753eedd81ad8a1aeb70de"
+    }
+  ],
+  "openAccess": true
+}

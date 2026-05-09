@@ -1,0 +1,66 @@
+{
+  "name": "solar-exits",
+  "displayName": "Solar Elite Recovery",
+  "visibleHours": [
+    6,
+    23
+  ],
+  "masterKeyHash": "1f00cb133e54708728c6da68f0c6a3c390a2d24c976cfaacc78cfa136116f2fc",
+  "adminCodeHash": "cd0e7bce6a7adcfa6369f76bd4b0b2a5531ff561a9b07211c0f1627532af5253",
+  "closers": [
+    {
+      "slug": "mauricio",
+      "name": "Mauricio Betancourt",
+      "defaultTz": "America/Los_Angeles",
+      "pinHash": "3e55e8e4d66c5e7dff3dd1e9bc50c9cf031155bd306a8413f8c9abb9c0444efe"
+    },
+    {
+      "slug": "elle",
+      "name": "Elle Haskin",
+      "defaultTz": "America/Los_Angeles",
+      "pinHash": "13dfc1aa84f8680161ec22d18e5303b9f2fee4390cb19c167e3eaec3357f46a7"
+    },
+    {
+      "slug": "ej",
+      "name": "EJ Green",
+      "defaultTz": "America/Chicago",
+      "pinHash": "ec0aa5ee77a15aecf8a36b2cb507224a26cbc58b855a84b81879b540381b7e3f"
+    },
+    {
+      "slug": "igor",
+      "name": "Igor Godoroja",
+      "defaultTz": "America/New_York",
+      "pinHash": "fe5d3e63c1b02ae7858cbe5847ce2ebc703bc6a57b599bc1d3c3a9bdd76bc953"
+    },
+    {
+      "slug": "brooke",
+      "name": "Brooke Russell",
+      "defaultTz": "America/Chicago",
+      "pinHash": "b634b70bf6f7ee40dc01e32abc1dfa50b663990d2d1472a57c88e1cdd7f7833b"
+    },
+    {
+      "slug": "jared",
+      "name": "Jared Curtis",
+      "defaultTz": "America/Chicago",
+      "pinHash": "7fe66940846891253a199672d032060b2c7c23746b024d006775955b97fba5dd"
+    },
+    {
+      "slug": "dpena",
+      "name": "Daniel Pena",
+      "defaultTz": "America/Chicago",
+      "pinHash": "d5358215ffa0142669f31eb356dfed46729502b0dde27bb5e51513af8d3f4140"
+    },
+    {
+      "slug": "draines",
+      "name": "Daniel Raines",
+      "defaultTz": "America/Chicago",
+      "pinHash": "c3ff2bf00e876867674fb03841579efc12d5b5b9d1b027b24a36e47d37a7df54"
+    },
+    {
+      "slug": "alexandra",
+      "name": "Alexandra Skouzes",
+      "defaultTz": "America/Chicago",
+      "pinHash": "e2a2b99152fdb3cfdb7dd1d8baf5dc826bf65fe069eaebe9d2a1b69fcb3f5e77"
+    }
+  ]
+}

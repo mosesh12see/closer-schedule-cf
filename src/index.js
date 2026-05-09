@@ -26,6 +26,7 @@ export default {
       if (path === '/api/auth' && method === 'POST') return apiAuth(request, env);
       if (path === '/api/admin-auth' && method === 'POST') return apiAdminAuth(request, env);
       if (path === '/api/save' && method === 'POST') return apiSave(request, env);
+      if (path === '/api/team-save' && method === 'POST') return apiTeamSave(request, env);
       if (path === '/api/confirm' && method === 'POST') return apiConfirm(request, env);
 
       const stateMatch = path.match(/^\/api\/state\/([^/]+)\/(\d{4}-\d{2}-\d{2})(?:\/([^/]+))?$/);
@@ -62,6 +63,11 @@ export default {
       const adminLoginMatch = path.match(/^\/c\/([^/]+)\/admin\/?$/);
       if (adminLoginMatch && method === 'GET') {
         return htmlAdminLogin(env, adminLoginMatch[1]);
+      }
+
+      const teamMatch = path.match(/^\/c\/([^/]+)\/team\/?$/);
+      if (teamMatch && method === 'GET') {
+        return htmlTeam(env, teamMatch[1]);
       }
 
       const landingMatch = path.match(/^\/c\/([^/]+)\/?$/);
@@ -325,6 +331,59 @@ async function apiSave(request, env) {
   return jsonResp({ ok: true });
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// API: team-save  (no PIN, requires cfg.openAccess)
+// Body: { campaign, closerSlug, date, srcTz, slots }
+// ═══════════════════════════════════════════════════════════════════
+
+async function apiTeamSave(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const { campaign, closerSlug, date, srcTz, slots } = body;
+  if (!campaign || !closerSlug) return jsonResp({ ok: false, error: 'missing fields' }, 400);
+
+  const cfg = await getCampaign(env, campaign);
+  if (!cfg) return jsonResp({ ok: false, error: 'campaign not found' }, 404);
+  if (!cfg.openAccess) return jsonResp({ ok: false, error: 'open access not enabled' }, 403);
+  if (!cfg.closers.find(c => c.slug === closerSlug)) {
+    return jsonResp({ ok: false, error: 'closer not in roster' }, 404);
+  }
+  if (!date || !srcTz || !Array.isArray(slots)) {
+    return jsonResp({ ok: false, error: 'missing fields' }, 400);
+  }
+
+  const cleanedSrcSlots = (slots || [])
+    .filter(s => typeof s === 'number' && s >= 0 && s < SLOTS_PER_DAY)
+    .sort((a, b) => a - b);
+  if (countShifts(cleanedSrcSlots) > 2) {
+    return jsonResp({ ok: false, error: 'max 2 shifts per day' }, 400);
+  }
+
+  const byCtDate = new Map();
+  for (const s of cleanedSrcSlots) {
+    const { date: ctDate, slot: ctSlot } = srcSlotToCt(date, s, srcTz);
+    if (!byCtDate.has(ctDate)) byCtDate.set(ctDate, new Set());
+    byCtDate.get(ctDate).add(ctSlot);
+  }
+
+  const ctSpan = computeCtDateSpanFromSrc(date, srcTz);
+  const nowIso = new Date().toISOString();
+
+  for (const ctDate of ctSpan) {
+    const k = `day:${campaign}:${ctDate}:${closerSlug}`;
+    const prevRaw = await env.SCHEDULE_KV.get(k);
+    const prev = prevRaw ? JSON.parse(prevRaw) : { slotsBySrcDate: {}, confirmedAt: null, notes: '' };
+    prev.slotsBySrcDate = prev.slotsBySrcDate || {};
+    prev.slotsBySrcDate[date] = Array.from(byCtDate.get(ctDate) || []).sort((a, b) => a - b);
+    prev.lastSrcTz = srcTz;
+    prev.submittedAt = nowIso;
+    if (prev.confirmedAt && ctDate >= ctToday()) prev.confirmedAt = null;
+    prev.slots = combinedSlots(prev.slotsBySrcDate);
+    await env.SCHEDULE_KV.put(k, JSON.stringify(prev), { expirationTtl: DAY_TTL });
+  }
+
+  return jsonResp({ ok: true });
+}
+
 function combinedSlots(slotsBySrcDate) {
   const set = new Set();
   for (const arr of Object.values(slotsBySrcDate || {})) {
@@ -499,6 +558,12 @@ async function htmlLanding(env, campaign) {
   return htmlResp(LANDING_HTML(campaign, cfg));
 }
 
+async function htmlTeam(env, campaign) {
+  const cfg = await getCampaign(env, campaign);
+  if (!cfg) return new Response('Campaign not found', { status: 404 });
+  return htmlResp(TEAM_HTML(campaign, cfg));
+}
+
 async function htmlCloser(env, campaign, closerSlug, url) {
   const cfg = await getCampaign(env, campaign);
   if (!cfg) return new Response('Campaign not found', { status: 404 });
@@ -623,6 +688,309 @@ goBtn.onclick = async () => {
 };
 document.getElementById('pin').addEventListener('keydown', e => { if (e.key === 'Enter') goBtn.click(); });
 </script></body></html>`;
+}
+
+// ─── Team page: no-PIN multi-closer painter (cfg.openAccess only) ───
+function TEAM_HTML(campaign, cfg) {
+  const visibleHours = cfg.visibleHours || [6, 23];
+  const defaultTz = cfg.closers[0]?.defaultTz || 'America/Chicago';
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(cfg.displayName)} — Team Schedule</title>
+<style>
+*{box-sizing:border-box}
+:root{
+  --bg:#0f1115;--panel:#161922;--panel2:#1c2030;--ink:#e9ecf3;--ink-soft:#9aa3b8;
+  --accent:#5b8def;--accent-2:#7aa7ff;--rule:#262a38;--ok:#22c55e;--off:#2a2f40;
+  --sans:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--ink);-webkit-tap-highlight-color:transparent;padding:18px}
+.head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px}
+.head h1{margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em}
+.head .sub{font-size:12px;color:var(--ink-soft);margin-top:2px}
+.tz{display:flex;align-items:center;gap:8px}
+.tz label{font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.06em}
+select{background:var(--panel);color:var(--ink);border:1px solid var(--rule);padding:6px 10px;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit}
+.pills{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap}
+.pill{background:var(--panel);color:var(--ink-soft);border:1px solid var(--rule);padding:8px 14px;border-radius:999px;cursor:pointer;font-size:13px;font-weight:500;transition:all 0.12s;font-family:inherit}
+.pill:hover{color:var(--ink);border-color:var(--accent)}
+.pill.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.panel{background:var(--panel);border:1px solid var(--rule);border-radius:14px;padding:14px;margin-bottom:14px}
+.panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:13px;color:var(--ink-soft);font-weight:500}
+.panel-head .day{font-size:14px;color:var(--ink);font-weight:600}
+.day-grid{display:grid;grid-template-columns:48px 1fr;gap:6px;align-items:start;user-select:none;-webkit-user-select:none;touch-action:pan-y}
+.hour-row{display:contents}
+.hour-lbl{font-family:var(--mono);font-size:11px;color:var(--ink-soft);padding-top:8px;text-align:right;padding-right:4px}
+.hour-cell{display:grid;grid-template-columns:1fr 1fr;gap:3px}
+.q{height:30px;background:var(--off);border:1px solid transparent;border-radius:5px;cursor:pointer;transition:background 0.06s}
+.q:hover{background:#36405a}
+.q.on{background:var(--accent);border-color:var(--accent-2)}
+.q.on:hover{background:var(--accent-2)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:680px){.row2{grid-template-columns:1fr}}
+.actions{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:12px}
+.summary{font-size:12px;color:var(--ink-soft);font-family:var(--mono)}
+button.save{background:var(--accent);color:#fff;border:none;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;letter-spacing:0.01em;transition:background 0.12s}
+button.save:hover{background:var(--accent-2)}
+button.save:disabled{background:#3a4159;cursor:wait}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--panel2);color:var(--ink);padding:10px 18px;border:1px solid var(--rule);border-radius:8px;font-size:13px;opacity:0;pointer-events:none;transition:opacity 0.2s}
+.toast.show{opacity:1}
+.toast.err{border-color:#ef4444;color:#fca5a5}
+.toast.ok{border-color:var(--ok);color:#86efac}
+.note{font-size:11px;color:var(--ink-soft);margin-top:8px}
+</style></head>
+<body>
+<div class="head">
+  <div>
+    <h1>${esc(cfg.displayName)} — Schedule</h1>
+    <div class="sub">Set your hours for today and tomorrow. Max 2 shifts per day.</div>
+  </div>
+  <div class="tz">
+    <label>Timezone</label>
+    <select id="tz"></select>
+  </div>
+</div>
+
+<div class="pills" id="pills"></div>
+<div id="grids"></div>
+<div class="actions">
+  <div class="summary" id="summary"></div>
+  <button class="save" id="save">Save</button>
+</div>
+<div class="note">Hours auto-clear after 9 days. Pick your contiguous block, click again to remove. One break allowed (max 2 blocks).</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const CAMPAIGN = ${JSON.stringify(campaign)};
+const CLOSERS = ${JSON.stringify(cfg.closers.map(c => ({slug: c.slug, name: c.name, defaultTz: c.defaultTz || 'America/Chicago'})))};
+const VISIBLE = ${JSON.stringify(visibleHours)};
+const SLOTS_PER_HOUR = 2;
+
+const TZS = ['America/Phoenix','America/Los_Angeles','America/Denver','America/Chicago','America/New_York'];
+const tzSel = document.getElementById('tz');
+TZS.forEach(t => { const o = document.createElement('option'); o.value=t; o.textContent=t.split('/')[1].replace(/_/g,' '); tzSel.appendChild(o); });
+tzSel.value = ${JSON.stringify(defaultTz)};
+
+let activeSlug = CLOSERS[0].slug;
+const stateBySlug = {}; // slug -> { date -> Set<slot> }
+const dirtyBySlug = {}; // slug -> Set<date>
+
+function todayInTz(tz){
+  const p = new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());
+  const m = Object.fromEntries(p.map(x=>[x.type,x.value]));
+  return m.year+'-'+m.month+'-'+m.day;
+}
+function nextDate(iso){
+  const [y,m,d] = iso.split('-').map(n=>parseInt(n,10));
+  const dt = new Date(Date.UTC(y,m-1,d));
+  dt.setUTCDate(dt.getUTCDate()+1);
+  return dt.toISOString().slice(0,10);
+}
+function slotLabel(s){
+  const h = Math.floor(s/SLOTS_PER_HOUR);
+  const mm = (s%SLOTS_PER_HOUR)*30;
+  const ap = h>=12?'p':'a'; const h12 = h%12===0?12:h%12;
+  return h12+(mm===0?'':':'+String(mm).padStart(2,'0'))+ap;
+}
+function bucketRanges(slots){
+  if(!slots.size) return [];
+  const sorted=[...slots].sort((a,b)=>a-b);
+  const out=[]; let s=sorted[0],p=sorted[0];
+  for(let i=1;i<sorted.length;i++){
+    if(sorted[i]===p+1){p=sorted[i];continue;}
+    out.push([s,p]); s=sorted[i]; p=sorted[i];
+  }
+  out.push([s,p]);
+  return out;
+}
+function summarize(slots){
+  const r = bucketRanges(slots);
+  if(!r.length) return '';
+  return r.map(([s,e])=>slotLabel(s)+'–'+slotLabel(e+1)).join(', ');
+}
+function countShifts(slots){
+  return bucketRanges(slots).length;
+}
+
+function renderPills(){
+  const pills = document.getElementById('pills');
+  pills.innerHTML = '';
+  for(const c of CLOSERS){
+    const b = document.createElement('button');
+    b.className = 'pill' + (c.slug===activeSlug?' active':'');
+    b.textContent = c.name;
+    b.onclick = () => { activeSlug = c.slug; renderPills(); renderGrids(); renderSummary(); };
+    pills.appendChild(b);
+  }
+}
+
+function getDaySet(slug, date){
+  stateBySlug[slug] = stateBySlug[slug] || {};
+  if(!stateBySlug[slug][date]) stateBySlug[slug][date] = new Set();
+  return stateBySlug[slug][date];
+}
+
+function renderGrids(){
+  const today = todayInTz(tzSel.value);
+  const tomorrow = nextDate(today);
+  const grids = document.getElementById('grids');
+  grids.innerHTML = '';
+  const wrap = document.createElement('div'); wrap.className='row2';
+  for(const date of [today, tomorrow]){
+    const panel = document.createElement('div'); panel.className='panel';
+    const head = document.createElement('div'); head.className='panel-head';
+    const lbl = new Intl.DateTimeFormat('en-US',{timeZone:tzSel.value,weekday:'short',month:'short',day:'numeric'}).format(new Date(date+'T12:00:00'));
+    head.innerHTML = '<span class="day">'+lbl+'</span><span>'+(date===today?'Today':'Tomorrow')+'</span>';
+    panel.appendChild(head);
+    const grid = document.createElement('div'); grid.className='day-grid';
+    grid.dataset.date = date;
+    const slots = getDaySet(activeSlug, date);
+    for(let h=VISIBLE[0]; h<=VISIBLE[1]; h++){
+      const row = document.createElement('div'); row.className='hour-row';
+      const lblEl = document.createElement('div'); lblEl.className='hour-lbl';
+      lblEl.textContent = (h%12===0?12:h%12)+(h<12?'a':'p');
+      row.appendChild(lblEl);
+      const cell = document.createElement('div'); cell.className='hour-cell';
+      for(let q=0;q<2;q++){
+        const idx = h*2+q;
+        const div = document.createElement('div');
+        div.className = 'q' + (slots.has(idx)?' on':'');
+        div.dataset.slot = idx;
+        div.dataset.date = date;
+        cell.appendChild(div);
+      }
+      row.appendChild(cell);
+      grid.appendChild(row);
+    }
+    panel.appendChild(grid);
+    wrap.appendChild(panel);
+  }
+  grids.appendChild(wrap);
+  attachPainter();
+}
+
+function renderSummary(){
+  const today = todayInTz(tzSel.value);
+  const tomorrow = nextDate(today);
+  const a = summarize(getDaySet(activeSlug, today)) || '—';
+  const b = summarize(getDaySet(activeSlug, tomorrow)) || '—';
+  document.getElementById('summary').textContent = 'Today: '+a+' · Tomorrow: '+b;
+}
+
+let painting=false, paintMode=null, paintDate=null, painterAttached=false;
+function attachPainter(){
+  if(painterAttached) return;
+  painterAttached = true;
+  function quarterAt(x,y){
+    const el = document.elementFromPoint(x,y);
+    return el && el.closest ? el.closest('.q') : null;
+  }
+  function apply(q, idx){
+    const slots = getDaySet(activeSlug, paintDate);
+    if(paintMode==='add'){
+      if(slots.has(idx)) return;
+      slots.add(idx);
+      if(countShifts(slots)>2){
+        slots.delete(idx);
+        toast('Max 2 shifts per day','err');
+        return;
+      }
+    } else {
+      slots.delete(idx);
+    }
+    q.classList.toggle('on', slots.has(idx));
+    (dirtyBySlug[activeSlug] = dirtyBySlug[activeSlug] || new Set()).add(paintDate);
+  }
+  function onDown(e){
+    const q = e.target.closest && e.target.closest('.q'); if(!q) return;
+    e.preventDefault();
+    painting=true; paintDate=q.dataset.date;
+    const slots = getDaySet(activeSlug, paintDate);
+    const idx = +q.dataset.slot;
+    paintMode = slots.has(idx)?'remove':'add';
+    apply(q, idx);
+  }
+  function onMove(e){
+    if(!painting) return;
+    const t = e.touches?e.touches[0]:e;
+    const q = quarterAt(t.clientX, t.clientY); if(!q) return;
+    if(q.dataset.date !== paintDate) return;
+    apply(q, +q.dataset.slot);
+  }
+  function onUp(){
+    if(painting) renderSummary();
+    painting=false; paintDate=null;
+  }
+  document.addEventListener('mousedown', onDown);
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+  document.addEventListener('touchstart', onDown, {passive:false});
+  document.addEventListener('touchmove', onMove, {passive:false});
+  document.addEventListener('touchend', onUp);
+}
+
+function toast(msg, kind){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show '+(kind||'ok');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(()=>{t.className='toast '+(kind||'ok')}, 2200);
+}
+
+async function loadAll(){
+  const today = todayInTz(tzSel.value);
+  const tomorrow = nextDate(today);
+  for(const c of CLOSERS){
+    stateBySlug[c.slug] = {};
+    for(const d of [today, tomorrow]){
+      try{
+        const r = await fetch('/api/state/'+CAMPAIGN+'/'+d+'/'+c.slug);
+        const j = await r.json();
+        const set = new Set();
+        if(j.ok && j.data){
+          // j.data.slots are CT slots; convert each back to viewing TZ.
+          // For simplicity, the team page treats current viewing TZ as srcTz: we convert CT->tz.
+          // To keep this lean, just trust whatever was last saved was the same tz; show the raw slots.
+          // (Edge case: closer changes TZ — slots show in original TZ.)
+          const arr = (j.data.slotsBySrcDate && j.data.slotsBySrcDate[d]) || j.data.slots || [];
+          arr.forEach(s => set.add(s));
+        }
+        stateBySlug[c.slug][d] = set;
+      }catch(e){
+        stateBySlug[c.slug][d] = new Set();
+      }
+    }
+  }
+  renderGrids(); renderSummary();
+}
+
+document.getElementById('save').onclick = async () => {
+  const btn = document.getElementById('save');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  let allOk = true;
+  for(const slug of Object.keys(dirtyBySlug)){
+    for(const date of dirtyBySlug[slug]){
+      const slots = Array.from(stateBySlug[slug][date] || new Set());
+      try{
+        const r = await fetch('/api/team-save', {method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({campaign:CAMPAIGN, closerSlug:slug, date, srcTz:tzSel.value, slots})});
+        const j = await r.json();
+        if(!j.ok) { allOk=false; toast(j.error||'save failed','err'); }
+      }catch(e){ allOk=false; toast('network error','err'); }
+    }
+  }
+  if(allOk){ for(const k of Object.keys(dirtyBySlug)) delete dirtyBySlug[k]; toast('Saved','ok'); }
+  btn.disabled = false; btn.textContent = 'Save';
+};
+
+tzSel.onchange = () => { loadAll(); };
+
+renderPills();
+loadAll();
+</script>
+</body></html>`;
 }
 
 // ─── Closer scheduling page (multi-day grid) ────────────────────────

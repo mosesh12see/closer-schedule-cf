@@ -121,7 +121,7 @@ const closers = roster.map(c => {
   };
 });
 
-// Preserve previous visibleHours if cfg already had it.
+// Preserve previous visibleHours + openAccess if cfg already had them.
 const cfg = {
   name: campaignSlug,
   displayName,
@@ -130,6 +130,7 @@ const cfg = {
   adminCodeHash,
   closers: closers.map(c => c.config),
 };
+if (existing.cfg?.openAccess) cfg.openAccess = true;
 
 fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 
