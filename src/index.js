@@ -700,8 +700,8 @@ function TEAM_HTML(campaign, cfg) {
 <style>
 *{box-sizing:border-box}
 :root{
-  --bg:#0f1115;--panel:#161922;--panel2:#1c2030;--ink:#e9ecf3;--ink-soft:#9aa3b8;
-  --accent:#5b8def;--accent-2:#7aa7ff;--rule:#262a38;--ok:#22c55e;--off:#2a2f40;
+  --bg:#f7f8fa;--panel:#ffffff;--panel2:#f1f3f7;--ink:#15171c;--ink-soft:#6b7280;
+  --accent:#3b82f6;--accent-2:#2563eb;--rule:#e5e7eb;--ok:#16a34a;--off:#eef0f4;
   --sans:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
   --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
 }
@@ -724,9 +724,10 @@ select{background:var(--panel);color:var(--ink);border:1px solid var(--rule);pad
 .hour-lbl{font-family:var(--mono);font-size:11px;color:var(--ink-soft);padding-top:8px;text-align:right;padding-right:4px}
 .hour-cell{display:grid;grid-template-columns:1fr 1fr;gap:3px}
 .q{height:30px;background:var(--off);border:1px solid transparent;border-radius:5px;cursor:pointer;transition:background 0.06s}
-.q:hover{background:#36405a}
+.q:hover{background:#dbe3f2}
 .q.on{background:var(--accent);border-color:var(--accent-2)}
 .q.on:hover{background:var(--accent-2)}
+.panel{box-shadow:0 1px 2px rgba(15,23,42,0.04)}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @media (max-width:680px){.row2{grid-template-columns:1fr}}
 .actions{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:12px}
