@@ -1616,9 +1616,8 @@ h1 em{font-style:italic;color:var(--accent);font-weight:400}
 .lb-link{padding:0.5rem 0.95rem;background:var(--ink);color:var(--paper);border:1px solid var(--ink);border-radius:999px;font-size:0.8125rem;font-family:inherit;text-decoration:none;font-weight:500;transition:background 0.15s,border-color 0.15s}
 .lb-link:hover{background:var(--accent);border-color:var(--accent)}
 main{max-width:1600px;margin:0 auto;padding:1.25rem}
-.dayrow{display:grid;grid-template-columns:repeat(2,1fr);gap:1rem}
-@media (max-width:900px){.dayrow{grid-template-columns:1fr}}
-.daycard{background:var(--paper);border:1px solid var(--rule);border-radius:14px;padding:1.125rem 1.25rem;box-shadow:0 1px 0 rgba(255,255,255,0.5) inset}
+.dayrow{display:flex;flex-direction:column;gap:1rem}
+.daycard{background:var(--paper);border:1px solid var(--rule);border-radius:14px;padding:1.125rem 1.5rem;box-shadow:0 1px 0 rgba(255,255,255,0.5) inset}
 .daycard-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:0.875rem;padding-bottom:0.625rem;border-bottom:1px solid var(--rule)}
 .daycard-head .name{font-family:var(--mono);font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--ink-soft);font-weight:500;line-height:1}
 .daycard-head .date{font-family:var(--serif);font-size:1.5rem;font-weight:500;letter-spacing:-0.01em;color:var(--ink)}
