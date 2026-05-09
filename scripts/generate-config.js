@@ -2,18 +2,33 @@
 // Generates PINs + master key for a campaign, writes the cfg JSON for KV upload,
 // and writes a .secrets file (gitignored) with the plaintext PINs / master URL.
 //
-// Usage:  node scripts/generate-config.js solar-exits "Solar Elite Recovery"
+// Default behavior PRESERVES existing PINs + master key. Closers already in the
+// previous cfg-{slug}.json keep the PIN listed in secrets-{slug}.txt; only NEW
+// roster entries (by slug) get a fresh PIN. This keeps text messages stable
+// when adding people.
+//
+// Usage:
+//   node scripts/generate-config.js <slug> "<Display Name>"           (default — preserve)
+//   node scripts/generate-config.js <slug> "<Display Name>" --rotate-pins
+//   node scripts/generate-config.js <slug> "<Display Name>" --rotate-master
+//   node scripts/generate-config.js <slug> "<Display Name>" --rotate-all
 
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const [campaignSlug, ...displayNameParts] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const flags = new Set(argv.filter(a => a.startsWith('--')));
+const positional = argv.filter(a => !a.startsWith('--'));
+const [campaignSlug, ...displayNameParts] = positional;
 const displayName = displayNameParts.join(' ') || campaignSlug;
 if (!campaignSlug) {
-  console.error('usage: node generate-config.js <slug> "<Display Name>"');
+  console.error('usage: node generate-config.js <slug> "<Display Name>" [--rotate-pins] [--rotate-master] [--rotate-all]');
   process.exit(1);
 }
+const rotateAll = flags.has('--rotate-all');
+const rotatePins = rotateAll || flags.has('--rotate-pins');
+const rotateMaster = rotateAll || flags.has('--rotate-master');
 
 // Define the closer roster here for the campaign.
 // Keep slugs stable — they appear in URLs and KV keys.
@@ -48,11 +63,46 @@ function randomToken(bytes) {
   return crypto.randomBytes(bytes).toString('hex');
 }
 
-const masterKey = randomToken(12); // 24 hex chars
+const outDir = path.resolve(__dirname, '..');
+const cfgPath = path.join(outDir, `cfg-${campaignSlug}.json`);
+const secretsPath = path.join(outDir, `secrets-${campaignSlug}.txt`);
+
+// Load existing state (if any) so we can preserve PINs + master key.
+function loadExisting() {
+  const out = { cfg: null, pinByName: new Map(), masterKey: null };
+  if (fs.existsSync(cfgPath)) {
+    try { out.cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch {}
+  }
+  if (fs.existsSync(secretsPath)) {
+    const txt = fs.readFileSync(secretsPath, 'utf8');
+    const m = txt.match(/master\/([a-f0-9]+)/);
+    if (m) out.masterKey = m[1];
+    for (const line of txt.split('\n')) {
+      const pm = line.match(/^\s*(.+?)\s{2,}https.+PIN:\s*(\d+)/);
+      if (pm) out.pinByName.set(pm[1].trim(), pm[2]);
+    }
+  }
+  return out;
+}
+const existing = loadExisting();
+
+const masterKey = (!rotateMaster && existing.masterKey) ? existing.masterKey : randomToken(12);
 const masterKeyHash = sha256Hex(`${campaignSlug}:master:${masterKey}`);
 
+const newPins = []; // log which closers got fresh PINs
 const closers = roster.map(c => {
-  const pin = randomPin();
+  let pin;
+  if (!rotatePins && existing.cfg) {
+    const prev = existing.cfg.closers.find(x => x.slug === c.slug);
+    if (prev) {
+      // Find PIN in secrets by previous OR current display name.
+      pin = existing.pinByName.get(prev.name) || existing.pinByName.get(c.name);
+    }
+  }
+  if (!pin) {
+    pin = randomPin();
+    newPins.push({ slug: c.slug, name: c.name, pin });
+  }
   const pinHash = sha256Hex(`${campaignSlug}:${c.slug}:${pin}`);
   return {
     config: { slug: c.slug, name: c.name, defaultTz: c.defaultTz, pinHash },
@@ -60,19 +110,18 @@ const closers = roster.map(c => {
   };
 });
 
+// Preserve previous visibleHours + adminCodeHash if cfg already had them.
 const cfg = {
   name: campaignSlug,
   displayName,
-  visibleHours: [6, 23],
+  visibleHours: existing.cfg?.visibleHours || [6, 23],
   masterKeyHash,
-  closers: closers.map(c => c.config)
+  closers: closers.map(c => c.config),
 };
+if (existing.cfg?.adminCodeHash) cfg.adminCodeHash = existing.cfg.adminCodeHash;
 
-const outDir = path.resolve(__dirname, '..');
-const cfgPath = path.join(outDir, `cfg-${campaignSlug}.json`);
 fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 
-const secretsPath = path.join(outDir, `secrets-${campaignSlug}.txt`);
 const lines = [
   `Closer Schedule Dashboard — ${displayName}`,
   `Generated ${new Date().toISOString()}`,
@@ -93,9 +142,14 @@ fs.writeFileSync(secretsPath, lines.join('\n'));
 
 console.log(`✓ Wrote ${cfgPath}`);
 console.log(`✓ Wrote ${secretsPath}  (gitignored)`);
+if (newPins.length) {
+  console.log('');
+  console.log('New PINs generated for:');
+  for (const p of newPins) console.log(`  ${p.name.padEnd(22)} PIN: ${p.pin}`);
+} else if (!rotatePins) {
+  console.log('All existing PINs preserved.');
+}
+if (rotateMaster) console.log('Master key rotated.');
 console.log('');
 console.log('Next steps:');
-console.log(`  1. Create KV namespace + put cfg into it:`);
-console.log(`     wrangler kv namespace create SCHEDULE_KV`);
-console.log(`     wrangler kv key put --binding=SCHEDULE_KV "cfg:campaign:${campaignSlug}" --path="${path.basename(cfgPath)}"`);
-console.log(`  2. wrangler deploy`);
+console.log(`  npx wrangler kv key put --binding=SCHEDULE_KV --remote "cfg:campaign:${campaignSlug}" --path="${path.basename(cfgPath)}"`);
