@@ -333,13 +333,15 @@ function combinedSlots(slotsBySrcDate) {
   return Array.from(set).sort((a, b) => a - b);
 }
 
-// Count contiguous shift blocks in a sorted array of slot indices.
+// Count contiguous shift blocks in a set or array of slot indices.
 // e.g. [10,11,12, 20,21] = 2 shifts. [10,11, 13, 15] = 3 shifts (rejected).
-function countShifts(sortedSlots) {
-  if (!sortedSlots || sortedSlots.length === 0) return 0;
+function countShifts(slotsIter) {
+  if (!slotsIter) return 0;
+  const sorted = Array.from(slotsIter).sort((a, b) => a - b);
+  if (sorted.length === 0) return 0;
   let count = 1;
-  for (let i = 1; i < sortedSlots.length; i++) {
-    if (sortedSlots[i] !== sortedSlots[i - 1] + 1) count++;
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] !== sorted[i - 1] + 1) count++;
   }
   return count;
 }
@@ -914,10 +916,12 @@ function countShifts(set) {
   return count;
 }
 
+let painterAttached = false;
+let painting = false, paintMode = null, paintDate = null, warnedThisDrag = false;
 function attachPainter() {
+  if (painterAttached) return;
+  painterAttached = true;
   const grid = document.getElementById('grid');
-  let painting = false, paintMode = null, paintDate = null;
-  let warnedThisDrag = false;
 
   function quarterAt(clientX, clientY) {
     const el = document.elementFromPoint(clientX, clientY);
@@ -959,7 +963,6 @@ function attachPainter() {
     const slots = state.daySlots.get(paintDate);
     if (paintMode === 'add') {
       if (slots.has(idx)) return;
-      // Two-shift rule: reject if adding this slot would create a 3rd block.
       slots.add(idx);
       if (countShifts(slots) > 2) {
         slots.delete(idx);
