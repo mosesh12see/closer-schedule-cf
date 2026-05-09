@@ -1624,8 +1624,8 @@ main{max-width:1600px;margin:0 auto;padding:1.25rem}
 .daycard-head .left{display:flex;flex-direction:column;gap:3px}
 .axis{display:grid;grid-template-columns:6.5rem 1fr;gap:0.5rem;align-items:center;margin-bottom:0.5rem;font-size:0.6875rem;color:var(--ink-soft);font-family:var(--mono)}
 .axis-track{position:relative;height:1rem}
-.axis .tick{position:absolute;top:0;border-left:1px solid var(--rule);height:100%;padding-left:0.3rem}
-.axis .tick.hour{border-left-color:var(--ink-faint);color:var(--ink)}
+.axis .tick{position:absolute;top:0;border-left:1px solid var(--rule);height:60%;padding-left:0.25rem;white-space:nowrap}
+.axis .tick.hour{border-left-color:var(--ink-faint);color:var(--ink);height:100%;font-weight:500}
 .closer-row{display:grid;grid-template-columns:6.5rem 1fr 4rem;gap:0.5rem;align-items:center;padding:0.4rem 0;border-top:1px solid color-mix(in oklab,var(--rule) 60%,transparent)}
 .closer-row:first-of-type{border-top:none}
 .closer-name{font-family:var(--serif);font-size:0.9375rem;font-weight:500;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:-0.005em}
@@ -1743,10 +1743,17 @@ function showTip(e, html) {
 function hideTip() { document.getElementById('tip').style.display = 'none'; }
 
 function renderAxis() {
+  // Label every-other-hour, with thin minor ticks on off-hours so the grid
+  // still reads at a glance but labels never collide on narrow day cards.
   const html = ['<div class="axis-track">'];
   for (let h = visibleHours[0]; h <= visibleHours[1]; h++) {
     const x = ((h*2 - SLOT_START) / SLOT_COUNT) * 100;
-    html.push('<div class="tick hour" style="left:' + x + '%">' + slotLabel(h*2) + '</div>');
+    const showLabel = ((h - visibleHours[0]) % 2 === 0);
+    if (showLabel) {
+      html.push('<div class="tick hour" style="left:' + x + '%">' + slotLabel(h*2) + '</div>');
+    } else {
+      html.push('<div class="tick" style="left:' + x + '%"></div>');
+    }
   }
   html.push('</div>');
   return html.join('');
