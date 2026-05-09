@@ -1,0 +1,11 @@
+name = "closer-schedule-cf"
+main = "src/index.js"
+compatibility_date = "2026-05-09"
+
+[[kv_namespaces]]
+binding = "SCHEDULE_KV"
+id = "0b54a133181d4ba1b9d770d2ea3862c2"
+
+[[routes]]
+pattern = "schedule.cancelmysolar.info"
+custom_domain = true

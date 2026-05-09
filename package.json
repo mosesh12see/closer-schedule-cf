@@ -1,0 +1,14 @@
+{
+  "name": "closer-schedule-cf",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Per-campaign daily closer-availability dashboard. CF Worker + KV.",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
