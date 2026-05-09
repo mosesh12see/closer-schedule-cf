@@ -71,9 +71,9 @@ const outDir = path.resolve(__dirname, '..');
 const cfgPath = path.join(outDir, `cfg-${campaignSlug}.json`);
 const secretsPath = path.join(outDir, `secrets-${campaignSlug}.txt`);
 
-// Load existing state (if any) so we can preserve PINs + master key.
+// Load existing state (if any) so we can preserve PINs + master key + admin code.
 function loadExisting() {
-  const out = { cfg: null, pinByName: new Map(), masterKey: null };
+  const out = { cfg: null, pinByName: new Map(), masterKey: null, adminCode: null };
   if (fs.existsSync(cfgPath)) {
     try { out.cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch {}
   }
@@ -81,9 +81,11 @@ function loadExisting() {
     const txt = fs.readFileSync(secretsPath, 'utf8');
     const m = txt.match(/master\/([a-f0-9]+)/);
     if (m) out.masterKey = m[1];
+    const am = txt.match(/Admin PIN:\s*(\d+)/);
+    if (am) out.adminCode = am[1];
     for (const line of txt.split('\n')) {
       const pm = line.match(/^\s*(.+?)\s{2,}https.+PIN:\s*(\d+)/);
-      if (pm) out.pinByName.set(pm[1].trim(), pm[2]);
+      if (pm && !/Admin PIN/.test(pm[1])) out.pinByName.set(pm[1].trim(), pm[2]);
     }
   }
   return out;
@@ -92,6 +94,11 @@ const existing = loadExisting();
 
 const masterKey = (!rotateMaster && existing.masterKey) ? existing.masterKey : randomToken(12);
 const masterKeyHash = sha256Hex(`${campaignSlug}:master:${masterKey}`);
+
+const rotateAdmin = rotateAll || flags.has('--rotate-admin');
+const adminCode = (!rotateAdmin && existing.adminCode) ? existing.adminCode : randomPin();
+const adminCodeHash = sha256Hex(`${campaignSlug}:admin:${adminCode}`);
+const adminCodeIsNew = !existing.adminCode || rotateAdmin;
 
 const newPins = []; // log which closers got fresh PINs
 const closers = roster.map(c => {
@@ -114,15 +121,15 @@ const closers = roster.map(c => {
   };
 });
 
-// Preserve previous visibleHours + adminCodeHash if cfg already had them.
+// Preserve previous visibleHours if cfg already had it.
 const cfg = {
   name: campaignSlug,
   displayName,
   visibleHours: existing.cfg?.visibleHours || [6, 23],
   masterKeyHash,
+  adminCodeHash,
   closers: closers.map(c => c.config),
 };
-if (existing.cfg?.adminCodeHash) cfg.adminCodeHash = existing.cfg.adminCodeHash;
 
 fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 
@@ -132,6 +139,9 @@ const lines = [
   '',
   `Master URL:`,
   `  https://schedule.cancelmysolar.info/c/${campaignSlug}/master/${masterKey}`,
+  '',
+  `Admin URL:    https://schedule.cancelmysolar.info/c/${campaignSlug}/admin`,
+  `Admin PIN:    ${adminCode}`,
   '',
   `Closer URLs + PINs:`,
 ];
@@ -154,6 +164,7 @@ if (newPins.length) {
   console.log('All existing PINs preserved.');
 }
 if (rotateMaster) console.log('Master key rotated.');
+if (adminCodeIsNew) console.log(`Admin PIN ${rotateAdmin ? 'rotated' : 'set'}: ${adminCode}`);
 console.log('');
 console.log('Next steps:');
 console.log(`  npx wrangler kv key put --binding=SCHEDULE_KV --remote "cfg:campaign:${campaignSlug}" --path="${path.basename(cfgPath)}"`);
