@@ -24,6 +24,7 @@ export default {
     try {
       // ─── API routes ───
       if (path === '/api/auth' && method === 'POST') return apiAuth(request, env);
+      if (path === '/api/admin-auth' && method === 'POST') return apiAdminAuth(request, env);
       if (path === '/api/save' && method === 'POST') return apiSave(request, env);
       if (path === '/api/confirm' && method === 'POST') return apiConfirm(request, env);
 
@@ -52,6 +53,15 @@ export default {
       const lbHtmlMatch = path.match(/^\/c\/([^/]+)\/leaderboard\/?$/);
       if (lbHtmlMatch && method === 'GET') {
         return htmlLeaderboard(env, lbHtmlMatch[1]);
+      }
+
+      const adminViewMatch = path.match(/^\/c\/([^/]+)\/admin\/view\/?$/);
+      if (adminViewMatch && method === 'GET') {
+        return htmlAdmin(env, adminViewMatch[1]);
+      }
+      const adminLoginMatch = path.match(/^\/c\/([^/]+)\/admin\/?$/);
+      if (adminLoginMatch && method === 'GET') {
+        return htmlAdminLogin(env, adminLoginMatch[1]);
       }
 
       const landingMatch = path.match(/^\/c\/([^/]+)\/?$/);
@@ -224,6 +234,39 @@ async function apiAuth(request, env) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// API: admin-auth — separate code (4-digit) gates the admin all-closers view.
+// Session lasts 1 hour vs 5 min for closer auth (admin views run longer).
+// ═══════════════════════════════════════════════════════════════════
+
+async function apiAdminAuth(request, env) {
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const body = await request.json().catch(() => ({}));
+  const { campaign, code } = body;
+
+  if (!campaign || !code) return jsonResp({ ok: false, error: 'missing fields' }, 400);
+  if (await ipBanned(env, campaign + ':admin', ip)) {
+    return jsonResp({ ok: false, error: 'too many attempts, try again later' }, 429);
+  }
+
+  const cfg = await getCampaign(env, campaign);
+  if (!cfg) return jsonResp({ ok: false, error: 'campaign not found' }, 404);
+  if (!cfg.adminCodeHash) return jsonResp({ ok: false, error: 'admin not enabled for this campaign' }, 404);
+
+  const codeHash = await sha256Hex(`${campaign}:admin:${code}`);
+  if (codeHash !== cfg.adminCodeHash) {
+    await ipFail(env, campaign + ':admin', ip);
+    return jsonResp({ ok: false, error: 'wrong code' }, 401);
+  }
+
+  const token = randomToken(16);
+  await env.SCHEDULE_KV.put(`adminsession:${token}`, JSON.stringify({
+    campaign, exp: Date.now() + 3600 * 1000
+  }), { expirationTtl: 3600 });
+
+  return jsonResp({ ok: true, token });
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // API: save
 // Body: { token, date (in srcTz), srcTz, slots: [int 0..95 in srcTz], notes }
 // Effect: converts to CT slots, writes to day:{campaign}:{ctDate}:{slug}.
@@ -240,10 +283,17 @@ async function apiSave(request, env) {
     return jsonResp({ ok: false, error: 'missing fields' }, 400);
   }
 
+  // Enforce: max 2 shifts per day (i.e. at most one break between blocks).
+  const cleanedSrcSlots = (slots || [])
+    .filter(s => typeof s === 'number' && s >= 0 && s < SLOTS_PER_DAY)
+    .sort((a, b) => a - b);
+  if (countShifts(cleanedSrcSlots) > 2) {
+    return jsonResp({ ok: false, error: 'max 2 shifts per day (one break max)' }, 400);
+  }
+
   // Map src slots → CT (date, slot) pairs.
   const byCtDate = new Map();
-  for (const s of slots) {
-    if (typeof s !== 'number' || s < 0 || s >= SLOTS_PER_DAY) continue;
+  for (const s of cleanedSrcSlots) {
     const { date: ctDate, slot: ctSlot } = srcSlotToCt(date, s, srcTz);
     if (!byCtDate.has(ctDate)) byCtDate.set(ctDate, new Set());
     byCtDate.get(ctDate).add(ctSlot);
@@ -281,6 +331,17 @@ function combinedSlots(slotsBySrcDate) {
     for (const n of arr) set.add(n);
   }
   return Array.from(set).sort((a, b) => a - b);
+}
+
+// Count contiguous shift blocks in a sorted array of slot indices.
+// e.g. [10,11,12, 20,21] = 2 shifts. [10,11, 13, 15] = 3 shifts (rejected).
+function countShifts(sortedSlots) {
+  if (!sortedSlots || sortedSlots.length === 0) return 0;
+  let count = 1;
+  for (let i = 1; i < sortedSlots.length; i++) {
+    if (sortedSlots[i] !== sortedSlots[i - 1] + 1) count++;
+  }
+  return count;
 }
 
 function computeCtDateSpanFromSrc(srcDate, srcTz) {
@@ -460,6 +521,18 @@ async function htmlLeaderboard(env, campaign) {
   return htmlResp(LEADERBOARD_HTML(campaign, cfg));
 }
 
+async function htmlAdminLogin(env, campaign) {
+  const cfg = await getCampaign(env, campaign);
+  if (!cfg) return new Response('Campaign not found', { status: 404 });
+  return htmlResp(ADMIN_LOGIN_HTML(campaign, cfg));
+}
+
+async function htmlAdmin(env, campaign) {
+  const cfg = await getCampaign(env, campaign);
+  if (!cfg) return new Response('Campaign not found', { status: 404 });
+  return htmlResp(ADMIN_HTML(campaign, cfg));
+}
+
 // ─── Shared brand tokens ──────────────────────────────────────────────
 const BRAND_HEAD = `
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -574,6 +647,8 @@ main{padding:1.25rem 1rem 6rem;max-width:1400px;margin:0 auto}
 .banner button{padding:0.55rem 1.25rem;background:var(--accent);color:var(--paper);border:none;border-radius:999px;font-weight:500;font-family:inherit;cursor:pointer;align-self:flex-start;font-size:0.875rem;transition:background 0.15s}
 .banner button:hover{background:color-mix(in oklab,var(--accent) 80%,var(--ink))}
 .banner.confirmed button{background:transparent;color:var(--ink);border:1px solid var(--rule);cursor:default}
+.info-note{background:color-mix(in oklab,var(--accent-2) 12%,var(--paper));border:1px solid color-mix(in oklab,var(--accent-2) 32%,var(--rule));color:var(--ink);padding:0.7rem 1rem;border-radius:12px;margin-bottom:1rem;font-size:0.8125rem;line-height:1.45}
+.info-note strong{font-family:var(--serif);font-style:italic;font-weight:500;color:var(--accent);margin-right:0.25rem}
 .schedule-card{background:var(--paper);border:1px solid var(--rule);border-radius:14px;padding:0.625rem;overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--ink-faint) transparent;box-shadow:0 1px 0 rgba(255,255,255,0.5) inset}
 .schedule-grid{display:grid;grid-template-columns:2.4rem repeat(7,minmax(74px,1fr));gap:4px;user-select:none;-webkit-user-select:none;touch-action:pan-y;min-width:600px}
 .day-header{text-align:center;padding:9px 4px 11px;cursor:pointer;border-radius:8px 8px 0 0;border-bottom:2px solid transparent;transition:background 0.15s,border-color 0.15s;display:flex;flex-direction:column;align-items:center;gap:3px}
@@ -635,6 +710,7 @@ textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px colo
 </header>
 
 <main>
+  <div class="info-note"><strong>Two-shift rule:</strong> Pick up to two blocks per day with one break between them (e.g. 8a–11a, then back 1p–5p). The grid won't let you flicker on-and-off all day.</div>
   <div id="banner"></div>
   <div class="schedule-card">
     <div class="schedule-grid" id="grid"></div>
@@ -828,9 +904,20 @@ function summarizeSlots(slots) {
   return ranges.map(([s, e]) => slotLabel(s) + '–' + slotLabel(e+1)).join(', ');
 }
 
+function countShifts(set) {
+  if (!set || set.size === 0) return 0;
+  const sorted = Array.from(set).sort((a,b)=>a-b);
+  let count = 1;
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] !== sorted[i-1] + 1) count++;
+  }
+  return count;
+}
+
 function attachPainter() {
   const grid = document.getElementById('grid');
   let painting = false, paintMode = null, paintDate = null;
+  let warnedThisDrag = false;
 
   function quarterAt(clientX, clientY) {
     const el = document.elementFromPoint(clientX, clientY);
@@ -842,6 +929,7 @@ function attachPainter() {
     if (!q) return;
     e.preventDefault();
     painting = true;
+    warnedThisDrag = false;
     paintDate = q.dataset.date;
     state.selectedDate = paintDate;
     if (!state.daySlots.has(paintDate)) state.daySlots.set(paintDate, new Set());
@@ -869,7 +957,21 @@ function attachPainter() {
   }
   function apply(q, idx) {
     const slots = state.daySlots.get(paintDate);
-    if (paintMode === 'add') slots.add(idx); else slots.delete(idx);
+    if (paintMode === 'add') {
+      if (slots.has(idx)) return;
+      // Two-shift rule: reject if adding this slot would create a 3rd block.
+      slots.add(idx);
+      if (countShifts(slots) > 2) {
+        slots.delete(idx);
+        if (!warnedThisDrag) {
+          toast('Max 2 shifts per day', true);
+          warnedThisDrag = true;
+        }
+        return;
+      }
+    } else {
+      slots.delete(idx);
+    }
     q.classList.toggle('on', slots.has(idx));
   }
   grid.addEventListener('mousedown', onDown);
@@ -1427,6 +1529,346 @@ document.querySelectorAll('.range-pill').forEach(p => {
 });
 
 load('week');
+</script></body></html>`;
+}
+
+// ─── Admin login (code 0550 for solar-exits) ────────────────────────
+function ADMIN_LOGIN_HTML(campaign, cfg) {
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(cfg.displayName)} — Admin</title>
+${BRAND_HEAD}
+<style>
+${BRAND_VARS}
+body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--ink);display:flex;min-height:100vh;align-items:center;justify-content:center;padding:1.5rem}
+.card{background:var(--paper);border:1px solid var(--rule);border-radius:18px;padding:2.25rem;width:100%;max-width:380px;box-shadow:0 24px 60px -24px rgba(82,40,15,0.30),0 1px 0 rgba(255,255,255,0.55) inset}
+h1{margin:0 0 0.25rem;font-family:var(--serif);font-size:1.875rem;font-weight:500;letter-spacing:-0.01em;line-height:1.1}
+h1 em{font-style:italic;color:var(--accent);font-weight:400}
+.sub{margin:0.4rem 0 1.75rem;color:var(--ink-soft);font-size:0.875rem}
+label{display:block;margin:0 0 0.5rem;font-family:var(--mono);font-size:0.6875rem;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.08em;font-weight:500}
+input{width:100%;padding:0.8rem 0.95rem;background:var(--bg);color:var(--ink);border:1px solid var(--rule);border-radius:10px;font-size:1.25rem;font-family:var(--mono);box-sizing:border-box;margin-bottom:1.125rem;transition:border-color 0.15s,box-shadow 0.15s;letter-spacing:0.5em;text-align:center}
+input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in oklab,var(--accent) 18%,transparent)}
+button{width:100%;padding:0.875rem;background:var(--ink);color:var(--paper);border:none;border-radius:999px;font-size:0.9375rem;font-weight:500;cursor:pointer;font-family:inherit;transition:background 0.15s,transform 0.05s}
+button:hover{background:var(--accent)}
+button:active{transform:translateY(1px)}
+button:disabled{background:var(--ink-faint);cursor:not-allowed}
+.err{color:var(--accent);font-size:0.875rem;margin-top:-0.5rem;margin-bottom:1.125rem;min-height:1.2em;font-weight:500;text-align:center}
+.foot{margin-top:1.5rem;text-align:center;font-size:0.75rem;color:var(--ink-soft);font-family:var(--mono);text-transform:uppercase;letter-spacing:0.08em}
+.foot a{color:var(--ink-soft);text-decoration:none;border-bottom:1px solid var(--rule)}
+.foot a:hover{color:var(--ink)}
+</style></head>
+<body><div class="card">
+<h1><em>Admin</em></h1>
+<p class="sub">${esc(cfg.displayName)} — enter the 4-digit admin code.</p>
+<label>Admin Code</label>
+<input id="code" type="tel" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="off" autofocus>
+<div class="err" id="err"></div>
+<button id="go">Enter</button>
+<div class="foot"><a href="/c/${esc(campaign)}">← Back to closer login</a></div>
+</div>
+<script>
+const campaign = ${JSON.stringify(campaign)};
+const goBtn = document.getElementById('go');
+const errEl = document.getElementById('err');
+const codeEl = document.getElementById('code');
+goBtn.onclick = async () => {
+  const code = codeEl.value;
+  if (!/^\\d{4}$/.test(code)) { errEl.textContent = 'Code is 4 digits'; return; }
+  errEl.textContent = '';
+  goBtn.disabled = true; goBtn.textContent = '…';
+  try {
+    const r = await fetch('/api/admin-auth', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ campaign, code }) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'Auth failed');
+    sessionStorage.setItem('adminToken_' + campaign, j.token);
+    location.href = '/c/' + campaign + '/admin/view';
+  } catch(e) {
+    errEl.textContent = e.message;
+    goBtn.disabled = false; goBtn.textContent = 'Enter';
+  }
+};
+codeEl.addEventListener('keydown', e => { if (e.key === 'Enter') goBtn.click(); });
+</script></body></html>`;
+}
+
+// ─── Admin view (all closers, two days side by side) ────────────────
+function ADMIN_HTML(campaign, cfg) {
+  const visibleHours = cfg.visibleHours || [6, 23];
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(cfg.displayName)} — Admin</title>
+${BRAND_HEAD}
+<style>
+${BRAND_VARS}
+body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--ink);min-height:100vh}
+header{background:color-mix(in oklab,var(--bg) 78%,white);backdrop-filter:saturate(140%) blur(8px);-webkit-backdrop-filter:saturate(140%) blur(8px);padding:1rem 1.25rem;border-bottom:1px solid var(--rule);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.6rem;position:sticky;top:0;z-index:10}
+h1{margin:0;font-family:var(--serif);font-size:1.375rem;font-weight:500;letter-spacing:-0.01em;line-height:1}
+h1 em{font-style:italic;color:var(--accent);font-weight:400}
+.meta{font-size:0.6875rem;color:var(--ink-soft);font-family:var(--mono);letter-spacing:0.08em;text-transform:uppercase;margin-top:4px}
+.header-right{display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap}
+.nav-btn{padding:0.45rem 0.85rem;background:var(--paper);color:var(--ink-soft);border:1px solid var(--rule);border-radius:999px;font-size:0.8125rem;font-family:inherit;cursor:pointer;transition:all 0.15s;text-decoration:none;display:inline-flex;align-items:center;gap:0.25rem}
+.nav-btn:hover{color:var(--ink);border-color:var(--ink-soft)}
+.nav-btn.danger{color:var(--accent)}
+.nav-btn.danger:hover{background:color-mix(in oklab,var(--accent) 8%,var(--paper));border-color:var(--accent)}
+.lb-link{padding:0.5rem 0.95rem;background:var(--ink);color:var(--paper);border:1px solid var(--ink);border-radius:999px;font-size:0.8125rem;font-family:inherit;text-decoration:none;font-weight:500;transition:background 0.15s,border-color 0.15s}
+.lb-link:hover{background:var(--accent);border-color:var(--accent)}
+main{max-width:1600px;margin:0 auto;padding:1.25rem}
+.dayrow{display:grid;grid-template-columns:repeat(2,1fr);gap:1rem}
+@media (max-width:900px){.dayrow{grid-template-columns:1fr}}
+.daycard{background:var(--paper);border:1px solid var(--rule);border-radius:14px;padding:1.125rem 1.25rem;box-shadow:0 1px 0 rgba(255,255,255,0.5) inset}
+.daycard-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:0.875rem;padding-bottom:0.625rem;border-bottom:1px solid var(--rule)}
+.daycard-head .name{font-family:var(--mono);font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--ink-soft);font-weight:500;line-height:1}
+.daycard-head .date{font-family:var(--serif);font-size:1.5rem;font-weight:500;letter-spacing:-0.01em;color:var(--ink)}
+.daycard-head .stats{font-family:var(--mono);font-size:0.6875rem;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.08em}
+.daycard-head .left{display:flex;flex-direction:column;gap:3px}
+.axis{display:grid;grid-template-columns:6.5rem 1fr;gap:0.5rem;align-items:center;margin-bottom:0.5rem;font-size:0.6875rem;color:var(--ink-soft);font-family:var(--mono)}
+.axis-track{position:relative;height:1rem}
+.axis .tick{position:absolute;top:0;border-left:1px solid var(--rule);height:100%;padding-left:0.3rem}
+.axis .tick.hour{border-left-color:var(--ink-faint);color:var(--ink)}
+.closer-row{display:grid;grid-template-columns:6.5rem 1fr 4rem;gap:0.5rem;align-items:center;padding:0.4rem 0;border-top:1px solid color-mix(in oklab,var(--rule) 60%,transparent)}
+.closer-row:first-of-type{border-top:none}
+.closer-name{font-family:var(--serif);font-size:0.9375rem;font-weight:500;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:-0.005em}
+.closer-row.empty .closer-name{color:var(--ink-soft);font-style:italic}
+.track{position:relative;height:1.6rem;background:color-mix(in oklab,var(--bg-deep) 50%,white);border-radius:5px;overflow:hidden;border:1px solid var(--rule)}
+.bar{position:absolute;top:0.15rem;bottom:0.15rem;background:var(--accent);border-radius:3px;box-shadow:0 1px 2px rgba(200,67,29,0.25)}
+.bar.pending{background:repeating-linear-gradient(45deg,var(--accent-2) 0,var(--accent-2) 5px,var(--glow) 5px,var(--glow) 10px);opacity:0.85;box-shadow:none}
+.hours{font-family:var(--mono);font-size:0.75rem;color:var(--ink);text-align:right;font-variant-numeric:tabular-nums;font-weight:500}
+.hours .unit{color:var(--ink-soft);margin-left:1px;font-size:0.6875rem}
+.coverage-row{display:grid;grid-template-columns:6.5rem 1fr 4rem;gap:0.5rem;align-items:center;padding-top:0.625rem;margin-top:0.5rem;border-top:1px solid var(--rule)}
+.coverage-row .closer-name{font-family:var(--mono);font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--ink-soft);font-weight:500}
+.cov-track{position:relative;height:1rem;background:var(--bg);border-radius:5px;overflow:hidden;border:1px solid var(--rule);display:flex}
+.cov-cell{flex:1;border-right:1px solid color-mix(in oklab,var(--rule) 60%,transparent)}
+.cov-cell:last-child{border-right:none}
+.peak{font-family:var(--mono);font-size:0.75rem;color:var(--ink);text-align:right;font-variant-numeric:tabular-nums;font-weight:500}
+.peak .unit{color:var(--ink-soft);margin-left:1px;font-size:0.6875rem}
+.empty-day{padding:1.5rem 0;text-align:center;color:var(--ink-soft);font-style:italic;font-family:var(--serif)}
+.legend{display:flex;gap:1rem;flex-wrap:wrap;font-family:var(--mono);font-size:0.6875rem;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.06em;margin-top:1rem;padding:0 0.25rem}
+.legend .swatch{display:inline-block;width:0.875rem;height:0.625rem;vertical-align:middle;margin-right:0.4rem;border-radius:2px}
+.tip{position:fixed;background:var(--paper);border:1px solid var(--rule);padding:0.55rem 0.85rem;border-radius:8px;font-size:0.75rem;pointer-events:none;display:none;z-index:30;max-width:18rem;color:var(--ink);box-shadow:0 12px 28px -8px rgba(82,40,15,0.30);line-height:1.5}
+.tip strong{font-family:var(--serif);font-weight:500}
+.loading{text-align:center;padding:2rem 1rem;color:var(--ink-soft);font-family:var(--mono);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em}
+</style></head>
+<body>
+<header>
+  <div>
+    <h1><em>Admin</em> · ${esc(cfg.displayName)}</h1>
+    <div class="meta">All times Central · auto-refresh 30s · <span id="lastSync"></span></div>
+  </div>
+  <div class="header-right">
+    <button class="nav-btn" id="prevBtn">← Prev</button>
+    <button class="nav-btn" id="todayBtn">Today</button>
+    <button class="nav-btn" id="nextBtn">Next →</button>
+    <a class="lb-link" href="/c/${esc(campaign)}/leaderboard">🏆 Leaderboard</a>
+    <button class="nav-btn danger" id="logoutBtn">Logout</button>
+  </div>
+</header>
+<main>
+  <div class="dayrow" id="dayrow">
+    <div class="daycard"><div class="loading">Loading…</div></div>
+    <div class="daycard"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="legend">
+    <span><span class="swatch" style="background:var(--accent)"></span>Confirmed</span>
+    <span><span class="swatch" style="background:repeating-linear-gradient(45deg,var(--accent-2) 0,var(--accent-2) 5px,var(--glow) 5px,var(--glow) 10px)"></span>Pending</span>
+    <span><span class="swatch" style="background:var(--good)"></span>Coverage heat</span>
+  </div>
+</main>
+<div class="tip" id="tip"></div>
+<script>
+const campaign = ${JSON.stringify(campaign)};
+const visibleHours = ${JSON.stringify(visibleHours)};
+const SLOT_START = visibleHours[0] * 2;
+const SLOT_END = (visibleHours[1] + 1) * 2;
+const SLOT_COUNT = SLOT_END - SLOT_START;
+
+const adminToken = sessionStorage.getItem('adminToken_' + campaign);
+if (!adminToken) location.href = '/c/' + campaign + '/admin';
+
+let cursorDate = null; // ISO date for the LEFT column ("today" by default)
+
+function ctToday() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone:'America/Chicago' }).format(new Date());
+}
+function addDays(d, n) {
+  const [y,m,da] = d.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m-1, da));
+  dt.setUTCDate(dt.getUTCDate() + n);
+  return dt.getUTCFullYear() + '-' + String(dt.getUTCMonth()+1).padStart(2,'0') + '-' + String(dt.getUTCDate()).padStart(2,'0');
+}
+function fmtName(iso, todayIso) {
+  if (iso === todayIso) return 'TODAY';
+  if (iso === addDays(todayIso, 1)) return 'TOMORROW';
+  if (iso === addDays(todayIso, -1)) return 'YESTERDAY';
+  const [y,m,da] = iso.split('-').map(Number);
+  return new Date(Date.UTC(y, m-1, da)).toLocaleDateString('en-US', { weekday:'long', timeZone:'UTC' }).toUpperCase();
+}
+function fmtDate(iso) {
+  const [y,m,da] = iso.split('-').map(Number);
+  return new Date(Date.UTC(y, m-1, da)).toLocaleDateString('en-US', { month:'short', day:'numeric', timeZone:'UTC' });
+}
+function slotLabel(s) {
+  const h = Math.floor(s/2) % 24;
+  const m = (s%2)*30;
+  const ap = h < 12 ? 'a' : 'p';
+  const h12 = h%12 === 0 ? 12 : h%12;
+  return h12 + (m>0 ? ':' + String(m).padStart(2,'0') : '') + ap;
+}
+function bucket(slots) {
+  if (!slots || !slots.length) return [];
+  const s = slots.slice().sort((a,b)=>a-b);
+  const out = [];
+  let start = s[0], prev = s[0];
+  for (let i = 1; i < s.length; i++) {
+    if (s[i] === prev + 1) { prev = s[i]; continue; }
+    out.push([start, prev+1]); start = s[i]; prev = s[i];
+  }
+  out.push([start, prev+1]);
+  return out;
+}
+function pct(slot) { return ((slot - SLOT_START) / SLOT_COUNT) * 100; }
+
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function showTip(e, html) {
+  const tip = document.getElementById('tip');
+  tip.innerHTML = html;
+  tip.style.display = 'block';
+  const x = Math.min(e.clientX + 10, window.innerWidth - 250);
+  tip.style.left = x + 'px';
+  tip.style.top = (e.clientY + 10) + 'px';
+}
+function hideTip() { document.getElementById('tip').style.display = 'none'; }
+
+function renderAxis() {
+  const html = ['<div class="axis-track">'];
+  for (let h = visibleHours[0]; h <= visibleHours[1]; h++) {
+    const x = ((h*2 - SLOT_START) / SLOT_COUNT) * 100;
+    html.push('<div class="tick hour" style="left:' + x + '%">' + slotLabel(h*2) + '</div>');
+  }
+  html.push('</div>');
+  return html.join('');
+}
+
+function renderDayCard(state, dateIso, todayIso) {
+  const closers = state.closers || [];
+  const sorted = closers.slice().sort((a, b) => {
+    const sa = state.state[a.slug]?.slots || [];
+    const sb = state.state[b.slug]?.slots || [];
+    const minA = sa.length ? Math.min(...sa) : 999;
+    const minB = sb.length ? Math.min(...sb) : 999;
+    return minA - minB;
+  });
+  let totalConfirmedSlots = 0, totalScheduledSlots = 0, activeCount = 0;
+  for (const c of sorted) {
+    const data = state.state[c.slug];
+    if (!data || !data.slots || data.slots.length === 0) continue;
+    activeCount++;
+    totalScheduledSlots += data.slots.length;
+    if (data.confirmedAt) totalConfirmedSlots += data.slots.length;
+  }
+  // Build coverage counts
+  const counts = new Array(SLOT_COUNT).fill(0);
+  for (const c of sorted) {
+    const data = state.state[c.slug];
+    if (!data || !data.confirmedAt) continue;
+    for (const s of (data.slots || [])) {
+      const idx = s - SLOT_START;
+      if (idx >= 0 && idx < SLOT_COUNT) counts[idx]++;
+    }
+  }
+  const peakOn = Math.max(0, ...counts);
+
+  const rows = sorted.map(c => {
+    const data = state.state[c.slug];
+    if (!data || !data.slots || data.slots.length === 0) {
+      return '<div class="closer-row empty"><div class="closer-name">' + escHtml(c.name) + '</div><div class="track"></div><div class="hours">—</div></div>';
+    }
+    const ranges = bucket(data.slots);
+    const isConfirmed = !!data.confirmedAt;
+    const bars = ranges.map(([s, e]) => {
+      if (e <= SLOT_START || s >= SLOT_END) return '';
+      const cs = Math.max(s, SLOT_START), ce = Math.min(e, SLOT_END);
+      const tipHtml = '<strong>' + escHtml(c.name) + '</strong><br>' + slotLabel(cs) + '–' + slotLabel(ce) + ' CT' +
+        (isConfirmed ? '<br>✓ Confirmed' : '<br>Pending confirm') +
+        (data.lastSrcTz && data.lastSrcTz !== 'America/Chicago' ? '<br>Submitted from ' + data.lastSrcTz : '') +
+        (data.notes ? '<br>"' + escHtml(data.notes) + '"' : '');
+      return '<div class="bar' + (isConfirmed?'':' pending') + '" data-tip="' + encodeURIComponent(tipHtml) + '" style="left:' + pct(cs) + '%;width:' + ((ce - cs) / SLOT_COUNT * 100) + '%"></div>';
+    }).join('');
+    const hrs = data.slots.length * 0.5;
+    const hrsStr = (hrs % 1 === 0) ? String(hrs) : hrs.toFixed(1);
+    return '<div class="closer-row"><div class="closer-name">' + escHtml(c.name) + '</div>' +
+           '<div class="track">' + bars + '</div>' +
+           '<div class="hours">' + hrsStr + '<span class="unit">h</span></div></div>';
+  }).join('');
+
+  // Coverage strip
+  const max = Math.max(1, ...counts);
+  const covCells = counts.map((cnt, i) => {
+    if (cnt === 0) return '<div class="cov-cell"></div>';
+    const alpha = 0.30 + 0.55 * (cnt / max);
+    return '<div class="cov-cell" style="background:rgba(45,122,95,' + alpha + ')" title="' + slotLabel(i + SLOT_START) + ' — ' + cnt + ' on"></div>';
+  }).join('');
+
+  const totalConfirmed = totalConfirmedSlots * 0.5;
+  const totalScheduled = totalScheduledSlots * 0.5;
+  const tcStr = (totalConfirmed % 1 === 0) ? String(totalConfirmed) : totalConfirmed.toFixed(1);
+  const tsStr = (totalScheduled % 1 === 0) ? String(totalScheduled) : totalScheduled.toFixed(1);
+
+  return '<div class="daycard">' +
+    '<div class="daycard-head"><div class="left">' +
+      '<div class="name">' + fmtName(dateIso, todayIso) + '</div>' +
+      '<div class="date">' + fmtDate(dateIso) + '</div></div>' +
+      '<div class="stats">' + activeCount + ' on · ' + tcStr + 'h confirmed · ' + tsStr + 'h scheduled</div>' +
+    '</div>' +
+    '<div class="axis"><div></div>' + renderAxis() + '</div>' +
+    (rows.length === 0 ? '<div class="empty-day">No hours submitted for this day yet.</div>' : rows) +
+    '<div class="coverage-row"><div class="closer-name">Coverage</div>' +
+      '<div class="cov-track">' + covCells + '</div>' +
+      '<div class="peak">' + peakOn + '<span class="unit">peak</span></div>' +
+    '</div>' +
+  '</div>';
+}
+
+async function loadDays() {
+  if (!cursorDate) cursorDate = ctToday();
+  const todayIso = ctToday();
+  const d0 = cursorDate;
+  const d1 = addDays(cursorDate, 1);
+  const dayrow = document.getElementById('dayrow');
+  try {
+    const [r0, r1] = await Promise.all([
+      fetch('/api/state/' + campaign + '/' + d0).then(r => r.json()),
+      fetch('/api/state/' + campaign + '/' + d1).then(r => r.json())
+    ]);
+    if (!r0.ok || !r1.ok) throw new Error('API error');
+    dayrow.innerHTML = renderDayCard(r0, d0, todayIso) + renderDayCard(r1, d1, todayIso);
+    document.getElementById('lastSync').textContent = new Date().toLocaleTimeString();
+    // Wire up hover tooltips on bars
+    document.querySelectorAll('.bar').forEach(b => {
+      const tipHtml = decodeURIComponent(b.dataset.tip || '');
+      b.onmouseenter = (e) => showTip(e, tipHtml);
+      b.onmousemove = (e) => showTip(e, tipHtml);
+      b.onmouseleave = hideTip;
+    });
+  } catch (e) {
+    dayrow.innerHTML = '<div class="daycard"><div class="empty-day">' + escHtml(e.message) + '</div></div>';
+  }
+}
+
+document.getElementById('prevBtn').onclick = () => { cursorDate = addDays(cursorDate || ctToday(), -1); loadDays(); };
+document.getElementById('nextBtn').onclick = () => { cursorDate = addDays(cursorDate || ctToday(), 1); loadDays(); };
+document.getElementById('todayBtn').onclick = () => { cursorDate = ctToday(); loadDays(); };
+document.getElementById('logoutBtn').onclick = () => {
+  sessionStorage.removeItem('adminToken_' + campaign);
+  location.href = '/c/' + campaign + '/admin';
+};
+
+cursorDate = ctToday();
+loadDays();
+setInterval(loadDays, 30000);
 </script></body></html>`;
 }
 
