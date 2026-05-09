@@ -1134,8 +1134,9 @@ main{padding:1.25rem;overflow-x:auto;max-width:1600px;margin:0 auto}
 .board{background:var(--paper);border:1px solid var(--rule);border-radius:14px;padding:1rem;box-shadow:0 1px 0 rgba(255,255,255,0.5) inset}
 .axis{display:grid;grid-template-columns:8rem 1fr;gap:0.5rem;align-items:center;margin-bottom:0.5rem;font-size:0.6875rem;color:var(--ink-soft);font-family:var(--mono);font-variant-numeric:tabular-nums}
 .axis .axis-track{position:relative;height:1.25rem;min-width:60rem}
-.axis .tick{position:absolute;top:0;border-left:1px solid var(--rule);height:100%;padding-left:0.3rem}
+.axis .tick{position:absolute;top:0;border-left:1px solid var(--rule);height:100%;padding-left:0.3rem;white-space:nowrap}
 .axis .tick.hour{border-left-color:var(--ink-faint);color:var(--ink)}
+.axis .tick.end{transform:translateX(-100%);padding-left:0;padding-right:0.3rem;border-left:none;border-right:1px solid var(--ink-faint);text-align:right}
 .gantt{display:grid;grid-template-columns:8rem 1fr;gap:0.5rem;align-items:center;min-width:fit-content}
 .closer{font-size:0.875rem;font-weight:500;padding-right:0.5rem;text-align:right;white-space:nowrap;color:var(--ink);font-family:var(--serif);letter-spacing:-0.005em}
 .track{position:relative;height:2.25rem;background:color-mix(in oklab,var(--bg-deep) 45%,white);border-radius:6px;overflow:hidden;min-width:60rem;border:1px solid var(--rule)}
@@ -1232,10 +1233,11 @@ function renderAxis() {
   const axis = document.getElementById('axis');
   axis.innerHTML = '<div></div><div class="axis-track" id="axisTrack"></div>';
   const track = document.getElementById('axisTrack');
-  for (let h = visibleHours[0]; h <= visibleHours[1]; h++) {
+  for (let h = visibleHours[0]; h <= visibleHours[1] + 1; h++) {
     const x = ((h*2 - SLOT_START) / SLOT_COUNT) * 100;
+    const isEnd = (h === visibleHours[1] + 1);
     const tick = document.createElement('div');
-    tick.className = 'tick hour';
+    tick.className = 'tick hour' + (isEnd ? ' end' : '');
     tick.style.left = x + '%';
     tick.textContent = slotLabel(h*2);
     track.appendChild(tick);
@@ -1626,6 +1628,7 @@ main{max-width:1600px;margin:0 auto;padding:1.25rem}
 .axis-track{position:relative;height:1rem}
 .axis .tick{position:absolute;top:0;border-left:1px solid var(--rule);height:60%;padding-left:0.25rem;white-space:nowrap}
 .axis .tick.hour{border-left-color:var(--ink-faint);color:var(--ink);height:100%;font-weight:500}
+.axis .tick.end{transform:translateX(-100%);padding-left:0;padding-right:0.25rem;border-left:none;border-right:1px solid var(--ink-faint);text-align:right}
 .closer-row{display:grid;grid-template-columns:6.5rem 1fr 4rem;gap:0.5rem;align-items:center;padding:0.4rem 0;border-top:1px solid color-mix(in oklab,var(--rule) 60%,transparent)}
 .closer-row:first-of-type{border-top:none}
 .closer-name{font-family:var(--serif);font-size:0.9375rem;font-weight:500;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:-0.005em}
@@ -1745,12 +1748,15 @@ function hideTip() { document.getElementById('tip').style.display = 'none'; }
 function renderAxis() {
   // Label every-other-hour, with thin minor ticks on off-hours so the grid
   // still reads at a glance but labels never collide on narrow day cards.
+  // Loop runs to visibleHours[1]+1 so the trailing boundary (e.g. 8p when
+  // window is 8a–8p) gets a labeled tick at the right edge of the track.
   const html = ['<div class="axis-track">'];
-  for (let h = visibleHours[0]; h <= visibleHours[1]; h++) {
+  for (let h = visibleHours[0]; h <= visibleHours[1] + 1; h++) {
     const x = ((h*2 - SLOT_START) / SLOT_COUNT) * 100;
     const showLabel = ((h - visibleHours[0]) % 2 === 0);
+    const isEnd = (h === visibleHours[1] + 1);
     if (showLabel) {
-      html.push('<div class="tick hour" style="left:' + x + '%">' + slotLabel(h*2) + '</div>');
+      html.push('<div class="tick hour' + (isEnd ? ' end' : '') + '" style="left:' + x + '%">' + slotLabel(h*2) + '</div>');
     } else {
       html.push('<div class="tick" style="left:' + x + '%"></div>');
     }
