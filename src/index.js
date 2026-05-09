@@ -1746,20 +1746,13 @@ function showTip(e, html) {
 function hideTip() { document.getElementById('tip').style.display = 'none'; }
 
 function renderAxis() {
-  // Label every-other-hour, with thin minor ticks on off-hours so the grid
-  // still reads at a glance but labels never collide on narrow day cards.
-  // Loop runs to visibleHours[1]+1 so the trailing boundary (e.g. 8p when
-  // window is 8a–8p) gets a labeled tick at the right edge of the track.
+  // Label every hour from visibleHours[0] through visibleHours[1]+1 inclusive,
+  // so both the start (8a) and trailing boundary (8p) anchor the axis.
   const html = ['<div class="axis-track">'];
   for (let h = visibleHours[0]; h <= visibleHours[1] + 1; h++) {
     const x = ((h*2 - SLOT_START) / SLOT_COUNT) * 100;
-    const showLabel = ((h - visibleHours[0]) % 2 === 0);
     const isEnd = (h === visibleHours[1] + 1);
-    if (showLabel) {
-      html.push('<div class="tick hour' + (isEnd ? ' end' : '') + '" style="left:' + x + '%">' + slotLabel(h*2) + '</div>');
-    } else {
-      html.push('<div class="tick" style="left:' + x + '%"></div>');
-    }
+    html.push('<div class="tick hour' + (isEnd ? ' end' : '') + '" style="left:' + x + '%">' + slotLabel(h*2) + '</div>');
   }
   html.push('</div>');
   return html.join('');
