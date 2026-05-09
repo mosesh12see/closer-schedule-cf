@@ -1623,7 +1623,7 @@ main{max-width:1600px;margin:0 auto;padding:1.25rem}
 .daycard-head .date{font-family:var(--serif);font-size:1.5rem;font-weight:500;letter-spacing:-0.01em;color:var(--ink)}
 .daycard-head .stats{font-family:var(--mono);font-size:0.6875rem;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.08em}
 .daycard-head .left{display:flex;flex-direction:column;gap:3px}
-.axis{display:grid;grid-template-columns:6.5rem 1fr;gap:0.5rem;align-items:center;margin-bottom:0.5rem;font-size:0.6875rem;color:var(--ink-soft);font-family:var(--mono)}
+.axis{display:grid;grid-template-columns:6.5rem 1fr 4rem;gap:0.5rem;align-items:center;margin-bottom:0.5rem;font-size:0.6875rem;color:var(--ink-soft);font-family:var(--mono)}
 .axis-track{position:relative;height:1rem}
 .axis .tick{position:absolute;top:0;border-left:1px solid var(--rule);height:60%;padding-left:0.25rem;white-space:nowrap}
 .axis .tick.hour{border-left-color:var(--ink-faint);color:var(--ink);height:100%;font-weight:500}
@@ -1828,7 +1828,7 @@ function renderDayCard(state, dateIso, todayIso) {
       '<div class="date">' + fmtDate(dateIso) + '</div></div>' +
       '<div class="stats">' + activeCount + ' on · ' + tcStr + 'h confirmed · ' + tsStr + 'h scheduled</div>' +
     '</div>' +
-    '<div class="axis"><div></div>' + renderAxis() + '</div>' +
+    '<div class="axis"><div></div>' + renderAxis() + '<div></div></div>' +
     (rows.length === 0 ? '<div class="empty-day">No hours submitted for this day yet.</div>' : rows) +
     '<div class="coverage-row"><div class="closer-name">Coverage</div>' +
       '<div class="cov-track">' + covCells + '</div>' +
