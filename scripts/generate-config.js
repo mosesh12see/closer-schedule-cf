@@ -44,6 +44,10 @@ const ROSTERS = {
     { slug: 'draines',   name: 'Daniel Raines',       defaultTz: 'America/Chicago' },
     { slug: 'alexandra', name: 'Alexandra Skouzes',   defaultTz: 'America/Chicago' },
   ],
+  'capital-energy-az': [
+    { slug: 'dayne',     name: 'Dayne Hall',          defaultTz: 'America/Phoenix' },
+    { slug: 'thomas',    name: 'Thomas Quist',        defaultTz: 'America/Phoenix' },
+  ],
 };
 
 const roster = ROSTERS[campaignSlug];
