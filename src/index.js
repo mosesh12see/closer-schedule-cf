@@ -235,22 +235,7 @@ async function apiSave(request, env) {
     byCtDate.get(ctDate).add(ctSlot);
   }
 
-  // We also need to *clear* prior slots that the user removed.
-  // Strategy: for each CT date this submission touches, REPLACE that closer's slot list
-  // with what was submitted, but only if the source date+srcTz could land slots there.
-  // For straddle handling: a save for src date "2026-05-09" in PT can land slots on
-  // CT 2026-05-09 and CT 2026-05-10 (since PT 11pm = CT 1am next day).
-  // We compute the candidate CT date span and replace those.
   const ctSpan = computeCtDateSpanFromSrc(date, srcTz);
-
-  // Existing data we may need to merge with: a user might submit a single src date
-  // that maps to two CT dates. The OTHER src date's submission also might write
-  // to the same CT date. To avoid clobbering, when we replace a CT date we ONLY
-  // overwrite the slots whose CT-time falls within the src-date+srcTz wall-clock range.
-  // Simplest correct approach: track a `srcDateSpan` per slot. We do per-day writes:
-  //   day:{c}:{ctDate}:{slug}.slotsBySrcDate[srcDate] = [ctSlots]
-  // Then compute "all slots" as union across srcDate keys. This is the schema we use.
-
   const nowIso = new Date().toISOString();
 
   for (const ctDate of ctSpan) {
@@ -260,18 +245,14 @@ async function apiSave(request, env) {
     prev.slotsBySrcDate = prev.slotsBySrcDate || {};
     prev.slotsBySrcDate[date] = Array.from(byCtDate.get(ctDate) || []).sort((a, b) => a - b);
 
-    // Submission metadata
     prev.lastSrcTz = srcTz;
     prev.submittedAt = nowIso;
     prev.notes = (typeof notes === 'string') ? notes : (prev.notes || '');
 
-    // If this CT date is in the past relative to NOW in CT, we don't auto-clear confirmedAt.
-    // But if the closer is editing, we *do* invalidate confirmedAt because the schedule changed.
     if (prev.confirmedAt && ctDate >= ctToday()) {
       prev.confirmedAt = null;
     }
 
-    // Compute combined slots for convenience
     prev.slots = combinedSlots(prev.slotsBySrcDate);
 
     await env.SCHEDULE_KV.put(k, JSON.stringify(prev), { expirationTtl: DAY_TTL });
@@ -288,9 +269,6 @@ function combinedSlots(slotsBySrcDate) {
   return Array.from(set).sort((a, b) => a - b);
 }
 
-// What CT dates can a given (srcDate, srcTz) span? Answer: at most 2 — the slots for
-// 00:00–23:45 in srcTz on srcDate map to UTC instants whose CT wall-clock dates differ
-// by at most 1 day depending on offset. We compute and dedupe.
 function computeCtDateSpanFromSrc(srcDate, srcTz) {
   const dates = new Set();
   for (const slot of [0, 95]) {
@@ -397,34 +375,66 @@ async function htmlMaster(env, campaign, masterKey) {
   return htmlResp(MASTER_HTML(campaign, cfg));
 }
 
+// ─── Shared brand tokens ──────────────────────────────────────────────
+const BRAND_HEAD = `
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,400..600;1,400&family=Geist:wght@300..600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+`;
+
+const BRAND_VARS = `
+:root {
+  --bg: #F6EBDC;
+  --bg-deep: #EFDDC4;
+  --paper: #FBF6EC;
+  --ink: #2A1B10;
+  --ink-soft: rgba(42,27,16,0.62);
+  --ink-faint: rgba(42,27,16,0.18);
+  --rule: rgba(42,27,16,0.14);
+  --accent: #C8431D;
+  --accent-2: #E8893A;
+  --glow: #FFB070;
+  --good: #2D7A5F;
+  --serif: "Newsreader", Georgia, serif;
+  --sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+* { box-sizing: border-box; }
+body { font-feature-settings: "ss01", "cv11"; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+`;
+
 // ─── Landing (PIN gate) ─────────────────────────────────────────────
 function LANDING_HTML(campaign, cfg) {
   const closers = cfg.closers.map(c => `<option value="${esc(c.slug)}">${esc(c.name)}</option>`).join('');
   return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(cfg.displayName)} — Schedule</title>
+${BRAND_HEAD}
 <style>
-  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1419;color:#e8eaed;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:1rem}
-  .card{background:#1a2028;border-radius:12px;padding:2rem;width:100%;max-width:380px;box-shadow:0 8px 32px rgba(0,0,0,0.4)}
-  h1{margin:0 0 0.25rem;font-size:1.25rem;font-weight:600}
-  p.sub{margin:0 0 1.5rem;color:#9aa0a6;font-size:0.875rem}
-  label{display:block;margin:0 0 0.4rem;font-size:0.8rem;color:#9aa0a6;text-transform:uppercase;letter-spacing:0.04em}
-  select,input{width:100%;padding:0.75rem;background:#0f1419;color:#e8eaed;border:1px solid #2a3038;border-radius:8px;font-size:1rem;box-sizing:border-box;margin-bottom:1rem;font-family:inherit}
-  input:focus,select:focus{outline:none;border-color:#3b82f6}
-  button{width:100%;padding:0.875rem;background:#3b82f6;color:white;border:none;border-radius:8px;font-size:1rem;font-weight:600;cursor:pointer}
-  button:hover{background:#2563eb}
-  button:disabled{background:#475569;cursor:not-allowed}
-  .err{color:#f87171;font-size:0.875rem;margin-top:-0.5rem;margin-bottom:1rem;min-height:1.2em}
+${BRAND_VARS}
+body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--ink);display:flex;min-height:100vh;align-items:center;justify-content:center;padding:1.5rem}
+.card{background:var(--paper);border:1px solid var(--rule);border-radius:18px;padding:2.25rem;width:100%;max-width:380px;box-shadow:0 24px 60px -24px rgba(82,40,15,0.30),0 1px 0 rgba(255,255,255,0.55) inset}
+h1{margin:0 0 0.25rem;font-family:var(--serif);font-size:1.875rem;font-weight:500;letter-spacing:-0.01em;line-height:1.1}
+h1 em{font-style:italic;color:var(--accent);font-weight:400}
+.sub{margin:0.4rem 0 1.75rem;color:var(--ink-soft);font-size:0.875rem;line-height:1.4}
+label{display:block;margin:0 0 0.5rem;font-family:var(--mono);font-size:0.6875rem;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.08em;font-weight:500}
+select,input{width:100%;padding:0.8rem 0.95rem;background:var(--bg);color:var(--ink);border:1px solid var(--rule);border-radius:10px;font-size:0.9375rem;font-family:inherit;box-sizing:border-box;margin-bottom:1.125rem;transition:border-color 0.15s,box-shadow 0.15s}
+select:focus,input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in oklab,var(--accent) 18%,transparent)}
+button{width:100%;padding:0.875rem;background:var(--ink);color:var(--paper);border:none;border-radius:999px;font-size:0.9375rem;font-weight:500;cursor:pointer;font-family:inherit;letter-spacing:-0.005em;transition:background 0.15s,transform 0.05s}
+button:hover{background:var(--accent)}
+button:active{transform:translateY(1px)}
+button:disabled{background:var(--ink-faint);cursor:not-allowed}
+.err{color:var(--accent);font-size:0.875rem;margin-top:-0.5rem;margin-bottom:1.125rem;min-height:1.2em;font-weight:500}
 </style></head>
 <body><div class="card">
-  <h1>${esc(cfg.displayName)}</h1>
-  <p class="sub">Pick yourself, enter your PIN.</p>
-  <label>Closer</label>
-  <select id="closer"><option value="">— choose —</option>${closers}</select>
-  <label>4-digit PIN</label>
-  <input id="pin" type="tel" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="off">
-  <div class="err" id="err"></div>
-  <button id="go">Enter</button>
+<h1>${esc(cfg.displayName)}</h1>
+<p class="sub">Pick yourself, enter your <em>4-digit PIN</em>.</p>
+<label>Closer</label>
+<select id="closer"><option value="">— choose —</option>${closers}</select>
+<label>4-digit PIN</label>
+<input id="pin" type="tel" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="off">
+<div class="err" id="err"></div>
+<button id="go">Enter</button>
 </div>
 <script>
 const campaign = ${JSON.stringify(campaign)};
@@ -455,50 +465,66 @@ document.getElementById('pin').addEventListener('keydown', e => { if (e.key === 
 </script></body></html>`;
 }
 
-// ─── Closer scheduling page ─────────────────────────────────────────
+// ─── Closer scheduling page (multi-day grid) ────────────────────────
 function CLOSER_HTML(campaign, cfg, closer) {
   const visibleHours = cfg.visibleHours || [6, 23];
   return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(closer.name)} — Schedule</title>
+${BRAND_HEAD}
 <style>
-  *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1419;color:#e8eaed;-webkit-tap-highlight-color:transparent}
-  header{background:#1a2028;padding:1rem;border-bottom:1px solid #2a3038;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;position:sticky;top:0;z-index:10}
-  header h1{margin:0;font-size:1rem;font-weight:600}
-  header .meta{font-size:0.75rem;color:#9aa0a6}
-  select{padding:0.4rem 0.6rem;background:#0f1419;color:#e8eaed;border:1px solid #2a3038;border-radius:6px;font-size:0.875rem}
-  .tabs{display:flex;overflow-x:auto;background:#1a2028;border-bottom:1px solid #2a3038;padding:0 0.5rem;scrollbar-width:none}
-  .tabs::-webkit-scrollbar{display:none}
-  .tab{padding:0.75rem 1rem;cursor:pointer;border-bottom:2px solid transparent;color:#9aa0a6;white-space:nowrap;font-size:0.875rem;flex-shrink:0}
-  .tab.active{color:#e8eaed;border-bottom-color:#3b82f6}
-  .tab.has-hours::after{content:' •';color:#3b82f6}
-  .tab.confirmed::after{content:' ✓';color:#22c55e}
-  main{padding:1rem;padding-bottom:6rem}
-  .banner{background:#422006;border:1px solid #92400e;color:#fbbf24;padding:1rem;border-radius:8px;margin-bottom:1rem;display:flex;flex-direction:column;gap:0.5rem}
-  .banner.confirmed{background:#052e1c;border-color:#166534;color:#86efac}
-  .banner button{padding:0.5rem 1rem;background:#fbbf24;color:#1a1004;border:none;border-radius:6px;font-weight:600;cursor:pointer;align-self:flex-start}
-  .banner.confirmed button{background:transparent;color:#86efac;border:1px solid #166534}
-  .grid{display:flex;flex-direction:column;gap:0.25rem;user-select:none;-webkit-user-select:none;touch-action:none}
-  .row{display:grid;grid-template-columns:3rem 1fr 1fr 1fr 1fr;gap:0.25rem;align-items:stretch}
-  .row .hr{font-size:0.75rem;color:#9aa0a6;display:flex;align-items:center;justify-content:flex-end;padding-right:0.4rem}
-  .cell{height:2.4rem;background:#1a2028;border-radius:4px;cursor:pointer;border:1px solid transparent;transition:background 0.05s,border-color 0.05s}
-  .cell.on{background:#3b82f6;border-color:#60a5fa}
-  .cell.painting{border-color:#fbbf24}
-  textarea{width:100%;padding:0.6rem;margin-top:0.75rem;background:#0f1419;color:#e8eaed;border:1px solid #2a3038;border-radius:6px;font-family:inherit;font-size:0.875rem;resize:vertical;min-height:60px}
-  .saveBar{position:fixed;bottom:0;left:0;right:0;background:#1a2028;border-top:1px solid #2a3038;padding:0.75rem 1rem;display:flex;gap:0.5rem;align-items:center;z-index:5}
-  .saveBar .summary{flex:1;font-size:0.875rem;color:#9aa0a6}
-  .saveBar button{padding:0.6rem 1.25rem;border-radius:6px;border:none;font-weight:600;cursor:pointer;font-size:0.875rem}
-  .saveBar .save{background:#3b82f6;color:white}
-  .saveBar .clear{background:transparent;color:#9aa0a6;border:1px solid #2a3038}
-  .save.dirty{background:#16a34a}
-  .toast{position:fixed;top:1rem;right:1rem;background:#16a34a;color:white;padding:0.6rem 1rem;border-radius:6px;font-size:0.875rem;opacity:0;transition:opacity 0.2s;pointer-events:none;z-index:20}
-  .toast.show{opacity:1}
-  .toast.err{background:#dc2626}
-  @media (min-width: 640px){
-    .row{grid-template-columns:4rem repeat(4, 1fr)}
-    .cell{height:2.8rem}
-  }
+${BRAND_VARS}
+body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--ink);-webkit-tap-highlight-color:transparent}
+header{background:color-mix(in oklab,var(--bg) 78%,white);backdrop-filter:saturate(140%) blur(8px);-webkit-backdrop-filter:saturate(140%) blur(8px);border-bottom:1px solid var(--rule);padding:0.875rem 1.125rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.6rem;position:sticky;top:0;z-index:10}
+header h1{margin:0;font-family:var(--serif);font-size:1.375rem;font-weight:500;letter-spacing:-0.01em;line-height:1}
+header .meta{font-size:0.6875rem;color:var(--ink-soft);font-family:var(--mono);letter-spacing:0.08em;text-transform:uppercase;margin-top:4px}
+select{padding:0.5rem 0.85rem;background:var(--paper);color:var(--ink);border:1px solid var(--rule);border-radius:999px;font-size:0.8125rem;font-family:inherit;cursor:pointer;transition:border-color 0.15s}
+select:hover{border-color:var(--ink-soft)}
+main{padding:1.25rem 1rem 6rem;max-width:1400px;margin:0 auto}
+.banner{background:color-mix(in oklab,var(--accent-2) 16%,var(--paper));border:1px solid color-mix(in oklab,var(--accent-2) 35%,var(--rule));color:var(--ink);padding:1rem 1.125rem;border-radius:14px;margin-bottom:1rem;display:flex;flex-direction:column;gap:0.75rem;font-size:0.9375rem}
+.banner.confirmed{background:color-mix(in oklab,var(--good) 14%,var(--paper));border-color:color-mix(in oklab,var(--good) 35%,var(--rule))}
+.banner button{padding:0.55rem 1.25rem;background:var(--accent);color:var(--paper);border:none;border-radius:999px;font-weight:500;font-family:inherit;cursor:pointer;align-self:flex-start;font-size:0.875rem;transition:background 0.15s}
+.banner button:hover{background:color-mix(in oklab,var(--accent) 80%,var(--ink))}
+.banner.confirmed button{background:transparent;color:var(--ink);border:1px solid var(--rule);cursor:default}
+.schedule-card{background:var(--paper);border:1px solid var(--rule);border-radius:14px;padding:0.625rem;overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--ink-faint) transparent;box-shadow:0 1px 0 rgba(255,255,255,0.5) inset}
+.schedule-grid{display:grid;grid-template-columns:2.4rem repeat(7,minmax(74px,1fr));gap:4px;user-select:none;-webkit-user-select:none;touch-action:pan-y;min-width:600px}
+.day-header{text-align:center;padding:9px 4px 11px;cursor:pointer;border-radius:8px 8px 0 0;border-bottom:2px solid transparent;transition:background 0.15s,border-color 0.15s;display:flex;flex-direction:column;align-items:center;gap:3px}
+.day-header:hover{background:color-mix(in oklab,var(--bg) 65%,white)}
+.day-header.today .day-name{color:var(--accent)}
+.day-header.has-hours .marker{background:var(--accent)}
+.day-header.confirmed .marker{background:var(--good)}
+.day-header.selected{background:color-mix(in oklab,var(--accent) 10%,var(--paper));border-bottom-color:var(--accent)}
+.day-header .day-name{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:var(--ink-soft);font-weight:500;line-height:1}
+.day-header .day-date{font-family:var(--serif);font-size:14px;font-weight:500;color:var(--ink);letter-spacing:-0.01em;line-height:1.1}
+.day-header .marker{display:inline-block;width:5px;height:5px;border-radius:999px;background:transparent;margin-top:1px}
+.hour-corner{position:sticky;left:0;background:var(--paper);z-index:2}
+.hour-label{display:flex;align-items:center;justify-content:flex-end;padding-right:6px;font-family:var(--mono);font-size:11px;color:var(--ink-soft);position:sticky;left:0;background:var(--paper);z-index:1;font-variant-numeric:tabular-nums}
+.day-cell{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;padding:1px}
+.quarter{height:28px;background:color-mix(in oklab,var(--bg-deep) 55%,white);border:1px solid transparent;border-radius:3px;cursor:pointer;transition:background 0.05s,border-color 0.05s}
+.quarter:hover{background:color-mix(in oklab,var(--glow) 60%,var(--bg-deep))}
+.quarter.on{background:var(--accent);border-color:color-mix(in oklab,var(--accent) 60%,var(--ink));box-shadow:0 1px 0 rgba(0,0,0,0.05)}
+.quarter.on:hover{background:color-mix(in oklab,var(--accent) 85%,var(--ink))}
+@media (min-width:760px){.quarter{height:32px}}
+.notes-card{background:var(--paper);border:1px solid var(--rule);border-radius:14px;padding:0.875rem 1rem;margin-top:1rem}
+.notes-card .lbl{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:0.08em;color:var(--ink-soft);font-weight:500;display:block;margin-bottom:0.5rem}
+.notes-card .lbl strong{color:var(--accent);font-weight:500;font-style:italic;font-family:var(--serif);text-transform:none;font-size:13px;letter-spacing:0;margin-left:2px}
+textarea{width:100%;padding:0.7rem 0.85rem;background:var(--bg);color:var(--ink);border:1px solid var(--rule);border-radius:8px;font-family:inherit;font-size:0.875rem;resize:vertical;min-height:56px;transition:border-color 0.15s,box-shadow 0.15s}
+textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in oklab,var(--accent) 18%,transparent)}
+.save-bar{position:fixed;bottom:0;left:0;right:0;background:color-mix(in oklab,var(--bg) 80%,white);backdrop-filter:saturate(140%) blur(8px);-webkit-backdrop-filter:saturate(140%) blur(8px);border-top:1px solid var(--rule);padding:0.75rem 1rem;z-index:5}
+.save-bar-inner{max-width:1400px;margin:0 auto;display:flex;gap:0.5rem;align-items:center}
+.save-bar .summary{flex:1;font-size:0.8125rem;color:var(--ink-soft);font-family:var(--mono);font-variant-numeric:tabular-nums}
+.save-bar .summary .num{color:var(--ink);font-weight:500}
+.save-bar button{padding:0.625rem 1.25rem;border-radius:999px;border:none;font-weight:500;cursor:pointer;font-size:0.875rem;font-family:inherit;transition:background 0.15s,transform 0.05s,color 0.15s}
+.save-bar button:active{transform:translateY(1px)}
+.save-bar .save{background:var(--ink);color:var(--paper)}
+.save-bar .save:hover{background:var(--accent)}
+.save-bar .save.dirty{background:var(--accent);color:var(--paper)}
+.save-bar .save.dirty:hover{background:color-mix(in oklab,var(--accent) 80%,var(--ink))}
+.save-bar .clear{background:transparent;color:var(--ink-soft);border:1px solid var(--rule)}
+.save-bar .clear:hover{color:var(--ink);border-color:var(--ink-soft)}
+.toast{position:fixed;top:1rem;right:1rem;background:var(--ink);color:var(--paper);padding:0.65rem 1.125rem;border-radius:999px;font-size:0.875rem;font-family:inherit;opacity:0;transition:opacity 0.2s,transform 0.2s;pointer-events:none;z-index:30;box-shadow:0 10px 30px -10px rgba(82,40,15,0.35);transform:translateY(-4px)}
+.toast.show{opacity:1;transform:translateY(0)}
+.toast.err{background:var(--accent)}
 </style></head>
 <body>
 <header>
@@ -517,18 +543,23 @@ function CLOSER_HTML(campaign, cfg, closer) {
   </select>
 </header>
 
-<div class="tabs" id="tabs"></div>
-
 <main>
   <div id="banner"></div>
-  <div class="grid" id="grid"></div>
-  <textarea id="notes" placeholder="Notes (e.g. 'breaking 5–5:30 for kids', 'hard out at 8:45')"></textarea>
+  <div class="schedule-card">
+    <div class="schedule-grid" id="grid"></div>
+  </div>
+  <div class="notes-card">
+    <span class="lbl">Notes for <strong id="notesDayLbl">today</strong></span>
+    <textarea id="notes" placeholder="e.g. 'breaking 5–5:30 for kids', 'hard out at 8:45'"></textarea>
+  </div>
 </main>
 
-<div class="saveBar">
-  <button class="clear" id="clear">Clear</button>
-  <span class="summary" id="summary">No hours selected</span>
-  <button class="save" id="save">Save</button>
+<div class="save-bar">
+  <div class="save-bar-inner">
+    <button class="clear" id="clear">Clear day</button>
+    <span class="summary" id="summary">No hours</span>
+    <button class="save" id="save">Save</button>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -537,6 +568,7 @@ function CLOSER_HTML(campaign, cfg, closer) {
 const campaign = ${JSON.stringify(campaign)};
 const closerSlug = ${JSON.stringify(closer.slug)};
 const visibleHours = ${JSON.stringify(visibleHours)};
+const VIEW_DAYS = ${VIEW_AHEAD_DAYS};
 const tokenKey = 'schedToken_' + campaign + '_' + closerSlug;
 const defaultTzKey = 'schedDefaultTz_' + campaign + '_' + closerSlug;
 
@@ -548,17 +580,15 @@ tzSel.value = sessionStorage.getItem(defaultTzKey) || ${JSON.stringify(closer.de
 
 const SLOTS_PER_DAY = 96;
 const state = {
-  selectedDate: null,         // ISO date in tz
-  daySlots: new Map(),        // dateIso -> Set<slotIdx>  (in current tz)
-  dayConfirmed: new Map(),    // dateIso -> ISO timestamp or null
-  notes: new Map(),           // dateIso -> string
-  dirty: new Set()            // set of dateIso that have unsaved changes
+  selectedDate: null,
+  daySlots: new Map(),
+  dayConfirmed: new Map(),
+  notes: new Map(),
+  dirty: new Set()
 };
 
-// Compute today + next 6 days in current tz.
 function todayInTz(tz) {
-  const dtf = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit' });
-  return dtf.format(new Date()); // en-CA gives YYYY-MM-DD
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
 }
 function addDays(d, n) {
   const [y,m,da] = d.split('-').map(Number);
@@ -566,50 +596,80 @@ function addDays(d, n) {
   dt.setUTCDate(dt.getUTCDate() + n);
   return dt.getUTCFullYear() + '-' + String(dt.getUTCMonth()+1).padStart(2,'0') + '-' + String(dt.getUTCDate()).padStart(2,'0');
 }
-function fmtTab(dateIso, n) {
-  if (n === 0) return 'Today';
-  if (n === 1) return 'Tomorrow';
-  const [y,m,d] = dateIso.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m-1, d));
-  return dt.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric', timeZone:'UTC' });
+function fmtDayName(n, iso) {
+  if (n === 0) return 'TODAY';
+  if (n === 1) return 'TOMORROW';
+  const [y,m,da] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m-1, da));
+  return dt.toLocaleDateString('en-US', { weekday:'short', timeZone:'UTC' }).toUpperCase();
 }
-
-function renderTabs() {
-  const tz = tzSel.value;
-  const t0 = todayInTz(tz);
-  const tabsEl = document.getElementById('tabs');
-  tabsEl.innerHTML = '';
-  for (let i = 0; i < ${VIEW_AHEAD_DAYS}; i++) {
-    const d = addDays(t0, i);
-    const tab = document.createElement('div');
-    tab.className = 'tab' + (d === state.selectedDate ? ' active' : '');
-    if ((state.daySlots.get(d) || new Set()).size > 0) tab.classList.add('has-hours');
-    if (state.dayConfirmed.get(d)) tab.classList.add('confirmed');
-    tab.textContent = fmtTab(d, i);
-    tab.onclick = () => { state.selectedDate = d; renderAll(); };
-    tabsEl.appendChild(tab);
-  }
+function fmtDayDate(iso) {
+  const [y,m,da] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m-1, da));
+  return dt.toLocaleDateString('en-US', { month:'short', day:'numeric', timeZone:'UTC' });
+}
+function fmtNotesLbl(n, iso) {
+  if (n === 0) return 'today';
+  if (n === 1) return 'tomorrow';
+  const [y,m,da] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m-1, da));
+  return dt.toLocaleDateString('en-US', { weekday:'long', month:'short', day:'numeric', timeZone:'UTC' });
+}
+function slotLabel(slot) {
+  const h = Math.floor(slot/4) % 24;
+  const m = (slot%4)*15;
+  const ap = h < 12 ? 'a' : 'p';
+  const h12 = h%12 === 0 ? 12 : h%12;
+  return h12 + (m>0 ? ':' + String(m).padStart(2,'0') : '') + ap;
+}
+function dayDates() {
+  const t0 = todayInTz(tzSel.value);
+  return Array.from({length: VIEW_DAYS}, (_, i) => ({ iso: addDays(t0, i), n: i }));
 }
 
 function renderGrid() {
   const grid = document.getElementById('grid');
   grid.innerHTML = '';
-  const slots = state.daySlots.get(state.selectedDate) || new Set();
+  const days = dayDates();
+
+  // Header row
+  const corner = document.createElement('div');
+  corner.className = 'hour-corner';
+  grid.appendChild(corner);
+  for (const {iso, n} of days) {
+    const h = document.createElement('div');
+    h.className = 'day-header' + (n === 0 ? ' today' : '') + (iso === state.selectedDate ? ' selected' : '');
+    if ((state.daySlots.get(iso) || new Set()).size > 0) h.classList.add('has-hours');
+    if (state.dayConfirmed.get(iso)) h.classList.add('confirmed');
+    h.innerHTML = '<span class="day-name">' + fmtDayName(n, iso) + '</span>' +
+                  '<span class="day-date">' + fmtDayDate(iso) + '</span>' +
+                  '<span class="marker"></span>';
+    h.dataset.date = iso;
+    h.onclick = () => { state.selectedDate = iso; renderAll(); };
+    grid.appendChild(h);
+  }
+
+  // Hour rows
   for (let h = visibleHours[0]; h <= visibleHours[1]; h++) {
-    const row = document.createElement('div');
-    row.className = 'row';
     const lbl = document.createElement('div');
-    lbl.className = 'hr';
-    lbl.textContent = (h % 12 === 0 ? 12 : h % 12) + (h < 12 ? 'a' : 'p');
-    row.appendChild(lbl);
-    for (let q = 0; q < 4; q++) {
-      const slotIdx = h * 4 + q;
+    lbl.className = 'hour-label';
+    lbl.textContent = (h%12===0?12:h%12) + (h<12?'a':'p');
+    grid.appendChild(lbl);
+    for (const {iso} of days) {
       const cell = document.createElement('div');
-      cell.className = 'cell' + (slots.has(slotIdx) ? ' on' : '');
-      cell.dataset.slot = slotIdx;
-      row.appendChild(cell);
+      cell.className = 'day-cell';
+      cell.dataset.date = iso;
+      const slots = state.daySlots.get(iso) || new Set();
+      for (let q = 0; q < 4; q++) {
+        const slotIdx = h*4 + q;
+        const quarter = document.createElement('div');
+        quarter.className = 'quarter' + (slots.has(slotIdx) ? ' on' : '');
+        quarter.dataset.slot = slotIdx;
+        quarter.dataset.date = iso;
+        cell.appendChild(quarter);
+      }
+      grid.appendChild(cell);
     }
-    grid.appendChild(row);
   }
   attachPainter();
 }
@@ -619,37 +679,52 @@ function renderBanner() {
   banner.innerHTML = '';
   const tz = tzSel.value;
   const t0 = todayInTz(tz);
-  const slots = state.daySlots.get(state.selectedDate) || new Set();
-  if (state.selectedDate === t0 && slots.size > 0) {
-    const div = document.createElement('div');
-    if (state.dayConfirmed.get(state.selectedDate)) {
-      div.className = 'banner confirmed';
-      div.innerHTML = '<div>✓ Confirmed for today: ' + summarizeSlots(slots, tz) + '</div>';
-    } else {
-      div.className = 'banner';
-      div.innerHTML = '<div>Confirm today\\'s hours: <strong>' + summarizeSlots(slots, tz) + '</strong></div><button id="confirmBtn">Confirm</button>';
-    }
-    banner.appendChild(div);
-    const btn = document.getElementById('confirmBtn');
-    if (btn) btn.onclick = doConfirm;
+  const slots = state.daySlots.get(t0) || new Set();
+  if (slots.size === 0) return;
+  const div = document.createElement('div');
+  if (state.dayConfirmed.get(t0)) {
+    div.className = 'banner confirmed';
+    div.innerHTML = '<div><strong>✓ Confirmed for today:</strong> ' + summarizeSlots(slots) + '</div>';
+  } else {
+    div.className = 'banner';
+    div.innerHTML = '<div>Lock in today\\'s hours: <strong>' + summarizeSlots(slots) + '</strong></div><button id="confirmBtn">Confirm Today</button>';
   }
+  banner.appendChild(div);
+  const btn = document.getElementById('confirmBtn');
+  if (btn) btn.onclick = doConfirm;
 }
 
 function renderNotes() {
   document.getElementById('notes').value = state.notes.get(state.selectedDate) || '';
+  const days = dayDates();
+  const sel = days.find(d => d.iso === state.selectedDate);
+  const lbl = document.getElementById('notesDayLbl');
+  if (sel) {
+    lbl.textContent = fmtNotesLbl(sel.n, sel.iso);
+  } else {
+    lbl.textContent = 'today';
+  }
 }
 
 function renderSummary() {
-  const slots = state.daySlots.get(state.selectedDate) || new Set();
-  const tz = tzSel.value;
+  let totalSlots = 0, dayCount = 0;
+  for (const [, s] of state.daySlots) {
+    if (s.size > 0) { totalSlots += s.size; dayCount++; }
+  }
   const sum = document.getElementById('summary');
-  sum.textContent = slots.size === 0 ? 'No hours selected' : summarizeSlots(slots, tz);
-  document.getElementById('save').classList.toggle('dirty', state.dirty.has(state.selectedDate));
+  if (totalSlots === 0) {
+    sum.textContent = 'No hours';
+  } else {
+    const hrs = (totalSlots * 0.25);
+    const hrsStr = (hrs % 1 === 0) ? String(hrs) : hrs.toFixed(2).replace(/0+$/,'').replace(/\\.$/, '');
+    sum.innerHTML = '<span class="num">' + hrsStr + ' hr</span> across <span class="num">' + dayCount + '</span> day' + (dayCount===1?'':'s');
+  }
+  document.getElementById('save').classList.toggle('dirty', state.dirty.size > 0);
 }
 
-function renderAll() { renderTabs(); renderGrid(); renderBanner(); renderNotes(); renderSummary(); }
+function renderAll() { renderGrid(); renderBanner(); renderNotes(); renderSummary(); }
 
-function summarizeSlots(slots, tz) {
+function summarizeSlots(slots) {
   if (slots.size === 0) return 'No hours';
   const sorted = Array.from(slots).sort((a,b)=>a-b);
   const ranges = [];
@@ -661,47 +736,50 @@ function summarizeSlots(slots, tz) {
   ranges.push([start, prev]);
   return ranges.map(([s, e]) => slotLabel(s) + '–' + slotLabel(e+1)).join(', ');
 }
-function slotLabel(slotIdx) {
-  const h = Math.floor(slotIdx / 4) % 24;
-  const m = (slotIdx % 4) * 15;
-  const ap = h < 12 ? 'a' : 'p';
-  const h12 = h % 12 === 0 ? 12 : h % 12;
-  return h12 + (m > 0 ? ':' + String(m).padStart(2,'0') : '') + ap;
-}
 
-// Click-and-drag painter
 function attachPainter() {
   const grid = document.getElementById('grid');
-  let painting = false, paintMode = null; // 'add' | 'remove'
-  const slots = state.daySlots.get(state.selectedDate) || new Set();
-  state.daySlots.set(state.selectedDate, slots);
+  let painting = false, paintMode = null, paintDate = null;
 
+  function quarterAt(clientX, clientY) {
+    const el = document.elementFromPoint(clientX, clientY);
+    if (!el) return null;
+    return el.closest && el.closest('.quarter');
+  }
   function onDown(e) {
-    const cell = e.target.closest('.cell');
-    if (!cell) return;
+    const q = e.target.closest && e.target.closest('.quarter');
+    if (!q) return;
     e.preventDefault();
     painting = true;
-    const idx = +cell.dataset.slot;
+    paintDate = q.dataset.date;
+    state.selectedDate = paintDate;
+    if (!state.daySlots.has(paintDate)) state.daySlots.set(paintDate, new Set());
+    const slots = state.daySlots.get(paintDate);
+    const idx = +q.dataset.slot;
     paintMode = slots.has(idx) ? 'remove' : 'add';
-    apply(idx);
+    apply(q, idx);
+    renderNotes();
   }
   function onMove(e) {
     if (!painting) return;
     const t = e.touches ? e.touches[0] : e;
-    const el = document.elementFromPoint(t.clientX, t.clientY);
-    if (!el) return;
-    const cell = el.closest && el.closest('.cell');
-    if (!cell || !grid.contains(cell)) return;
-    apply(+cell.dataset.slot);
+    const q = quarterAt(t.clientX, t.clientY);
+    if (!q) return;
+    if (q.dataset.date !== paintDate) return;
+    apply(q, +q.dataset.slot);
   }
   function onUp() {
-    if (painting) { state.dirty.add(state.selectedDate); renderTabs(); renderSummary(); }
-    painting = false;
+    if (painting) {
+      state.dirty.add(paintDate);
+      renderGrid();
+      renderSummary();
+    }
+    painting = false; paintDate = null;
   }
-  function apply(idx) {
+  function apply(q, idx) {
+    const slots = state.daySlots.get(paintDate);
     if (paintMode === 'add') slots.add(idx); else slots.delete(idx);
-    const cell = grid.querySelector('[data-slot="' + idx + '"]');
-    if (cell) cell.classList.toggle('on', slots.has(idx));
+    q.classList.toggle('on', slots.has(idx));
   }
   grid.addEventListener('mousedown', onDown);
   grid.addEventListener('mousemove', onMove);
@@ -719,16 +797,26 @@ function toast(msg, err) {
 }
 
 async function doSave() {
-  const slots = Array.from(state.daySlots.get(state.selectedDate) || new Set());
-  const notes = document.getElementById('notes').value;
-  state.notes.set(state.selectedDate, notes);
-  const r = await fetch('/api/save', { method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ token, date: state.selectedDate, srcTz: tzSel.value, slots, notes }) });
-  const j = await r.json();
-  if (!j.ok) { toast(j.error || 'Save failed', true); return; }
-  state.dirty.delete(state.selectedDate);
-  state.dayConfirmed.set(state.selectedDate, null); // edits invalidate confirm
-  toast('Saved');
+  // Ensure notes for selected day are captured
+  if (state.selectedDate) {
+    state.notes.set(state.selectedDate, document.getElementById('notes').value);
+  }
+  const dirtyDays = Array.from(state.dirty);
+  if (dirtyDays.length === 0) { toast('Nothing to save'); return; }
+
+  const tasks = dirtyDays.map(d => {
+    const slots = Array.from(state.daySlots.get(d) || new Set());
+    const notes = state.notes.get(d) || '';
+    return fetch('/api/save', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ token, date: d, srcTz: tzSel.value, slots, notes }) }).then(r => r.json());
+  });
+
+  const results = await Promise.all(tasks);
+  const failed = results.filter(r => !r.ok);
+  if (failed.length > 0) { toast('Some saves failed', true); return; }
+  state.dirty.clear();
+  for (const d of dirtyDays) state.dayConfirmed.set(d, null);
+  toast('Saved ' + dirtyDays.length + ' day' + (dirtyDays.length===1?'':'s'));
   renderAll();
 }
 
@@ -737,51 +825,55 @@ async function doConfirm() {
     body: JSON.stringify({ token }) });
   const j = await r.json();
   if (!j.ok) { toast(j.error || 'Confirm failed', true); return; }
-  state.dayConfirmed.set(state.selectedDate, j.confirmedAt);
-  toast('Confirmed');
+  state.dayConfirmed.set(todayInTz(tzSel.value), j.confirmedAt);
+  toast('Confirmed today');
   renderAll();
 }
 
 async function doClear() {
+  if (!state.selectedDate) return;
   state.daySlots.set(state.selectedDate, new Set());
   state.dirty.add(state.selectedDate);
   renderAll();
 }
 
+document.getElementById('notes').addEventListener('input', (e) => {
+  if (state.selectedDate) {
+    state.notes.set(state.selectedDate, e.target.value);
+    state.dirty.add(state.selectedDate);
+    document.getElementById('save').classList.add('dirty');
+  }
+});
+
 async function loadStateForTz(tz) {
-  // Convert all CT-stored data into the current tz view.
-  // Strategy: query each visible CT date's neighborhood (today CT, ±1) plus the
-  // tz-tab dates, and re-bucket into tz dates.
-  const ctToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(new Date());
+  const ctTodayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(new Date());
   const dates = new Set();
-  // Cover the union of CT dates that could correspond to tz dates in the next 7 days
   const t0 = todayInTz(tz);
-  for (let i = -1; i <= ${VIEW_AHEAD_DAYS}; i++) {
+  for (let i = -1; i <= VIEW_DAYS; i++) {
     dates.add(addDays(t0, i));
-    dates.add(addDays(ctToday, i));
+    dates.add(addDays(ctTodayStr, i));
   }
   state.daySlots.clear();
   state.dayConfirmed.clear();
   state.notes.clear();
+  state.dirty.clear();
   for (const d of dates) {
     const r = await fetch('/api/state/' + campaign + '/' + d + '/' + closerSlug);
     const j = await r.json();
     if (!j.ok || !j.data) continue;
     const data = j.data;
     const ctSlots = data.slots || [];
-    // Bucket slots into tz dates
     for (const ctSlot of ctSlots) {
       const { tzDate, tzSlot } = ctToTz(d, ctSlot, tz);
       if (!state.daySlots.has(tzDate)) state.daySlots.set(tzDate, new Set());
       state.daySlots.get(tzDate).add(tzSlot);
     }
-    if (data.confirmedAt) state.dayConfirmed.set(d, data.confirmedAt); // confirm tracked by CT date
+    if (data.confirmedAt) state.dayConfirmed.set(d, data.confirmedAt);
     if (data.notes) state.notes.set(d, data.notes);
   }
   renderAll();
 }
 
-// Client-side TZ conversion using the same trick as server
 function ctToTz(ctDate, ctSlot, destTz) {
   const [y,m,d] = ctDate.split('-').map(Number);
   const hh = Math.floor(ctSlot / 4), mm = (ctSlot % 4) * 15;
@@ -811,7 +903,10 @@ function utcFromWall(y, m, d, hh, mm, tz) {
 
 document.getElementById('save').onclick = doSave;
 document.getElementById('clear').onclick = doClear;
-tzSel.onchange = async () => { state.selectedDate = todayInTz(tzSel.value); await loadStateForTz(tzSel.value); };
+tzSel.onchange = async () => {
+  state.selectedDate = todayInTz(tzSel.value);
+  await loadStateForTz(tzSel.value);
+};
 
 state.selectedDate = todayInTz(tzSel.value);
 loadStateForTz(tzSel.value);
@@ -825,57 +920,68 @@ function MASTER_HTML(campaign, cfg) {
   return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(cfg.displayName)} — Manager</title>
+${BRAND_HEAD}
 <style>
-  *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1419;color:#e8eaed}
-  header{background:#1a2028;padding:1rem;border-bottom:1px solid #2a3038;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}
-  h1{margin:0;font-size:1.125rem;font-weight:600}
-  .meta{font-size:0.75rem;color:#9aa0a6}
-  .tabs{display:flex;overflow-x:auto;background:#1a2028;border-bottom:1px solid #2a3038;padding:0 0.5rem;scrollbar-width:none}
-  .tabs::-webkit-scrollbar{display:none}
-  .tab{padding:0.75rem 1rem;cursor:pointer;border-bottom:2px solid transparent;color:#9aa0a6;white-space:nowrap;font-size:0.875rem;flex-shrink:0}
-  .tab.active{color:#e8eaed;border-bottom-color:#3b82f6}
-  main{padding:1rem;overflow-x:auto}
-  .gantt{display:grid;grid-template-columns:7rem 1fr;gap:0.5rem;align-items:center;min-width:fit-content}
-  .closer{font-size:0.875rem;font-weight:500;padding-right:0.5rem;text-align:right;white-space:nowrap}
-  .track{position:relative;height:2rem;background:#1a2028;border-radius:4px;overflow:hidden;min-width:60rem}
-  .bar{position:absolute;top:0.2rem;bottom:0.2rem;background:#3b82f6;border-radius:3px;cursor:default}
-  .bar.pending{background:repeating-linear-gradient(45deg,#3b82f6 0,#3b82f6 4px,#1e40af 4px,#1e40af 8px);opacity:0.7}
-  .axis{display:grid;grid-template-columns:7rem 1fr;gap:0.5rem;align-items:center;margin-bottom:0.5rem;font-size:0.7rem;color:#9aa0a6}
-  .axis .axis-track{position:relative;height:1.25rem;min-width:60rem}
-  .axis .tick{position:absolute;top:0;border-left:1px solid #2a3038;height:100%;padding-left:0.2rem}
-  .axis .tick.hour{border-left-color:#475569}
-  .coverage{margin-top:0.75rem;display:grid;grid-template-columns:7rem 1fr;gap:0.5rem;align-items:center}
-  .cov-track{position:relative;height:1.5rem;background:#0f1419;border-radius:4px;overflow:hidden;min-width:60rem;display:flex}
-  .cov-cell{flex:1;border-right:1px solid #1a2028}
-  .legend{margin-top:1rem;font-size:0.75rem;color:#9aa0a6;display:flex;gap:1rem;flex-wrap:wrap}
-  .legend .box{display:inline-block;width:1rem;height:0.75rem;vertical-align:middle;margin-right:0.3rem;border-radius:2px}
-  .empty{color:#9aa0a6;font-style:italic;padding:2rem 0;text-align:center}
-  .tip{position:fixed;background:#0f1419;border:1px solid #2a3038;padding:0.5rem 0.75rem;border-radius:6px;font-size:0.75rem;pointer-events:none;display:none;z-index:30;max-width:18rem}
+${BRAND_VARS}
+body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--ink)}
+header{background:color-mix(in oklab,var(--bg) 78%,white);backdrop-filter:saturate(140%) blur(8px);-webkit-backdrop-filter:saturate(140%) blur(8px);padding:1rem 1.25rem;border-bottom:1px solid var(--rule);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.6rem;position:sticky;top:0;z-index:10}
+h1{margin:0;font-family:var(--serif);font-size:1.375rem;font-weight:500;letter-spacing:-0.01em;line-height:1}
+.meta{font-size:0.6875rem;color:var(--ink-soft);font-family:var(--mono);letter-spacing:0.08em;text-transform:uppercase;margin-top:4px}
+.day-pills{display:flex;overflow-x:auto;gap:0.5rem;padding:0.875rem 1.25rem;background:var(--bg);border-bottom:1px solid var(--rule);scrollbar-width:none}
+.day-pills::-webkit-scrollbar{display:none}
+.pill{flex-shrink:0;padding:0.55rem 1rem;border-radius:999px;background:var(--paper);border:1px solid var(--rule);color:var(--ink-soft);cursor:pointer;font-size:0.8125rem;font-weight:500;font-family:inherit;white-space:nowrap;transition:all 0.15s;display:flex;flex-direction:column;align-items:center;gap:1px;line-height:1.1}
+.pill:hover{border-color:var(--ink-soft);color:var(--ink)}
+.pill.active{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.pill .pn{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:0.1em;font-weight:500;opacity:0.85}
+.pill .pd{font-family:var(--serif);font-size:13px;letter-spacing:-0.01em}
+main{padding:1.25rem;overflow-x:auto;max-width:1600px;margin:0 auto}
+.board{background:var(--paper);border:1px solid var(--rule);border-radius:14px;padding:1rem;box-shadow:0 1px 0 rgba(255,255,255,0.5) inset}
+.axis{display:grid;grid-template-columns:8rem 1fr;gap:0.5rem;align-items:center;margin-bottom:0.5rem;font-size:0.6875rem;color:var(--ink-soft);font-family:var(--mono);font-variant-numeric:tabular-nums}
+.axis .axis-track{position:relative;height:1.25rem;min-width:60rem}
+.axis .tick{position:absolute;top:0;border-left:1px solid var(--rule);height:100%;padding-left:0.3rem}
+.axis .tick.hour{border-left-color:var(--ink-faint);color:var(--ink)}
+.gantt{display:grid;grid-template-columns:8rem 1fr;gap:0.5rem;align-items:center;min-width:fit-content}
+.closer{font-size:0.875rem;font-weight:500;padding-right:0.5rem;text-align:right;white-space:nowrap;color:var(--ink);font-family:var(--serif);letter-spacing:-0.005em}
+.track{position:relative;height:2.25rem;background:color-mix(in oklab,var(--bg-deep) 45%,white);border-radius:6px;overflow:hidden;min-width:60rem;border:1px solid var(--rule)}
+.bar{position:absolute;top:0.2rem;bottom:0.2rem;background:var(--accent);border-radius:4px;cursor:default;box-shadow:0 1px 2px rgba(200,67,29,0.25);transition:background 0.1s}
+.bar.pending{background:repeating-linear-gradient(45deg,var(--accent-2) 0,var(--accent-2) 5px,var(--glow) 5px,var(--glow) 10px);opacity:0.85;box-shadow:none}
+.bar:hover{background:color-mix(in oklab,var(--accent) 80%,var(--ink))}
+.coverage{margin-top:1rem;display:grid;grid-template-columns:8rem 1fr;gap:0.5rem;align-items:center}
+.coverage .closer{color:var(--ink-soft);font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:0.08em}
+.cov-track{position:relative;height:1.25rem;background:color-mix(in oklab,var(--bg-deep) 50%,white);border-radius:5px;overflow:hidden;min-width:60rem;display:flex;border:1px solid var(--rule)}
+.cov-cell{flex:1;border-right:1px solid var(--rule)}
+.legend{margin-top:1.25rem;font-size:0.75rem;color:var(--ink-soft);display:flex;gap:1.25rem;flex-wrap:wrap;font-family:var(--mono);text-transform:uppercase;letter-spacing:0.06em}
+.legend .box{display:inline-block;width:1rem;height:0.75rem;vertical-align:middle;margin-right:0.4rem;border-radius:3px}
+.empty{color:var(--ink-soft);font-style:italic;font-family:var(--serif);padding:2.5rem 0;text-align:center;font-size:1.125rem}
+.tip{position:fixed;background:var(--paper);border:1px solid var(--rule);padding:0.65rem 0.85rem;border-radius:8px;font-size:0.75rem;pointer-events:none;display:none;z-index:30;max-width:18rem;color:var(--ink);box-shadow:0 12px 28px -8px rgba(82,40,15,0.30),0 1px 0 rgba(255,255,255,0.55) inset;line-height:1.5;font-family:var(--sans)}
+.tip strong{font-family:var(--serif);font-weight:500}
 </style></head>
 <body>
 <header>
   <div>
-    <h1>${esc(cfg.displayName)} — Manager</h1>
-    <div class="meta">All times Central • Auto-refresh 30s</div>
+    <h1>${esc(cfg.displayName)}</h1>
+    <div class="meta">Manager · all times Central · auto-refresh 30s</div>
   </div>
   <div class="meta" id="lastSync"></div>
 </header>
-<div class="tabs" id="tabs"></div>
+<div class="day-pills" id="pills"></div>
 <main>
-  <div class="axis" id="axis"></div>
-  <div class="gantt" id="gantt"></div>
-  <div class="coverage" id="coverage"></div>
-  <div class="legend">
-    <span><span class="box" style="background:#3b82f6"></span>Confirmed</span>
-    <span><span class="box" style="background:repeating-linear-gradient(45deg,#3b82f6 0,#3b82f6 4px,#1e40af 4px,#1e40af 8px)"></span>Pending</span>
-    <span><span class="box" style="background:#16a34a"></span>Coverage heat</span>
+  <div class="board">
+    <div class="axis" id="axis"></div>
+    <div class="gantt" id="gantt"></div>
+    <div class="coverage" id="coverage"></div>
+    <div class="legend">
+      <span><span class="box" style="background:var(--accent)"></span>Confirmed</span>
+      <span><span class="box" style="background:repeating-linear-gradient(45deg,var(--accent-2) 0,var(--accent-2) 5px,var(--glow) 5px,var(--glow) 10px)"></span>Pending</span>
+      <span><span class="box" style="background:var(--good)"></span>Coverage heat</span>
+    </div>
   </div>
 </main>
 <div class="tip" id="tip"></div>
 <script>
 const campaign = ${JSON.stringify(campaign)};
 const visibleHours = ${JSON.stringify(visibleHours)};
+const VIEW_DAYS = ${VIEW_AHEAD_DAYS};
 const SLOTS_PER_DAY = 96;
 const SLOT_START = visibleHours[0] * 4;
 const SLOT_END = (visibleHours[1] + 1) * 4;
@@ -891,11 +997,15 @@ function addDays(d, n) {
   dt.setUTCDate(dt.getUTCDate() + n);
   return dt.getUTCFullYear() + '-' + String(dt.getUTCMonth()+1).padStart(2,'0') + '-' + String(dt.getUTCDate()).padStart(2,'0');
 }
-function fmtDate(d, n) {
-  if (n === 0) return 'Today';
-  if (n === 1) return 'Tomorrow';
-  const [y,m,da] = d.split('-').map(Number);
-  return new Date(Date.UTC(y, m-1, da)).toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric', timeZone:'UTC' });
+function fmtPillName(n, iso) {
+  if (n === 0) return 'TODAY';
+  if (n === 1) return 'TOMORROW';
+  const [y,m,da] = iso.split('-').map(Number);
+  return new Date(Date.UTC(y, m-1, da)).toLocaleDateString('en-US', { weekday:'short', timeZone:'UTC' }).toUpperCase();
+}
+function fmtPillDate(iso) {
+  const [y,m,da] = iso.split('-').map(Number);
+  return new Date(Date.UTC(y, m-1, da)).toLocaleDateString('en-US', { month:'short', day:'numeric', timeZone:'UTC' });
 }
 function slotLabel(s) {
   const h = Math.floor(s/4) % 24;
@@ -905,17 +1015,17 @@ function slotLabel(s) {
   return h12 + (m>0 ? ':' + String(m).padStart(2,'0') : '') + ap;
 }
 
-function renderTabs() {
+function renderPills() {
   const t0 = ctToday();
-  const tabsEl = document.getElementById('tabs');
-  tabsEl.innerHTML = '';
-  for (let i = 0; i < ${VIEW_AHEAD_DAYS}; i++) {
+  const pills = document.getElementById('pills');
+  pills.innerHTML = '';
+  for (let i = 0; i < VIEW_DAYS; i++) {
     const d = addDays(t0, i);
-    const tab = document.createElement('div');
-    tab.className = 'tab' + (d === selectedDate ? ' active' : '');
-    tab.textContent = fmtDate(d, i);
-    tab.onclick = () => { selectedDate = d; loadDay(); };
-    tabsEl.appendChild(tab);
+    const p = document.createElement('div');
+    p.className = 'pill' + (d === selectedDate ? ' active' : '');
+    p.innerHTML = '<span class="pn">' + fmtPillName(i, d) + '</span><span class="pd">' + fmtPillDate(d) + '</span>';
+    p.onclick = () => { selectedDate = d; loadDay(); };
+    pills.appendChild(p);
   }
 }
 
@@ -934,7 +1044,6 @@ function renderAxis() {
 }
 
 function bucket(slots) {
-  // Compress sorted slot indices into [start, end) ranges.
   if (!slots || !slots.length) return [];
   const s = slots.slice().sort((a,b)=>a-b);
   const out = [];
@@ -947,9 +1056,7 @@ function bucket(slots) {
   return out;
 }
 
-function pct(slot) {
-  return ((slot - SLOT_START) / SLOT_COUNT) * 100;
-}
+function pct(slot) { return ((slot - SLOT_START) / SLOT_COUNT) * 100; }
 
 function showTip(e, html) {
   const tip = document.getElementById('tip');
@@ -962,11 +1069,10 @@ function showTip(e, html) {
 }
 function hideTip() { document.getElementById('tip').style.display = 'none'; }
 
-function renderGantt(state, today) {
+function renderGantt(state) {
   const gantt = document.getElementById('gantt');
   gantt.innerHTML = '';
   const closers = state.closers;
-  // Sort by earliest slot today (closers with no hours at the bottom)
   const sorted = closers.slice().sort((a, b) => {
     const sa = state.state[a.slug]?.slots || [];
     const sb = state.state[b.slug]?.slots || [];
@@ -1012,7 +1118,6 @@ function renderCoverage(state) {
   const cov = document.getElementById('coverage');
   cov.innerHTML = '<div class="closer">Coverage</div><div class="cov-track" id="covTrack"></div>';
   const track = document.getElementById('covTrack');
-  // Per-15-min cell, count confirmed available
   const counts = new Array(SLOT_COUNT).fill(0);
   for (const c of state.closers) {
     const data = state.state[c.slug];
@@ -1028,8 +1133,8 @@ function renderCoverage(state) {
     cell.className = 'cov-cell';
     const ratio = counts[i] / max;
     if (counts[i] > 0) {
-      const alpha = 0.25 + 0.55 * ratio;
-      cell.style.background = 'rgba(34, 197, 94, ' + alpha + ')';
+      const alpha = 0.30 + 0.55 * ratio;
+      cell.style.background = 'rgba(45, 122, 95, ' + alpha + ')';
       cell.title = slotLabel(i + SLOT_START) + ' — ' + counts[i] + ' on';
     }
     track.appendChild(cell);
@@ -1038,12 +1143,12 @@ function renderCoverage(state) {
 
 async function loadDay() {
   if (!selectedDate) selectedDate = ctToday();
-  renderTabs();
+  renderPills();
   renderAxis();
   const r = await fetch('/api/state/' + campaign + '/' + selectedDate);
   const j = await r.json();
   if (!j.ok) return;
-  renderGantt(j, j.today);
+  renderGantt(j);
   renderCoverage(j);
   document.getElementById('lastSync').textContent = 'Last sync ' + new Date().toLocaleTimeString();
 }
