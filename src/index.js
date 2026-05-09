@@ -1,15 +1,19 @@
 // Closer Schedule Dashboard — Cloudflare Worker
-// Per-campaign daily availability board with PIN auth, 15-min granularity,
+// Per-campaign daily availability board with PIN auth, 30-min granularity,
 // pre-submit + day-of confirm, manager Gantt view in Central Time.
+// Includes /leaderboard for day/week/month rankings.
 
 const CT = 'America/Chicago';
-const SLOT_MINUTES = 15;
-const SLOTS_PER_DAY = 96; // 24h * 4
+const SLOT_MINUTES = 30;
+const SLOTS_PER_DAY = 48; // 24h * 2
+const SLOTS_PER_HOUR = 2;
+const HOURS_PER_SLOT = 0.5;
 const SESSION_TTL = 300;
 const PIN_BAN_TTL = 900;
 const PIN_BAN_THRESHOLD = 5;
-const DAY_TTL = 9 * 24 * 3600;
+const DAY_TTL = 35 * 24 * 3600; // 35d so leaderboard month range works
 const VIEW_AHEAD_DAYS = 7;
+const LEADERBOARD_CACHE_TTL = 60;
 
 export default {
   async fetch(request, env, ctx) {
@@ -28,6 +32,12 @@ export default {
         return apiState(env, stateMatch[1], stateMatch[2], stateMatch[3]);
       }
 
+      const lbApiMatch = path.match(/^\/api\/leaderboard\/([^/]+)$/);
+      if (lbApiMatch && method === 'GET') {
+        const range = url.searchParams.get('range') || 'week';
+        return apiLeaderboard(env, lbApiMatch[1], range);
+      }
+
       // ─── HTML routes ───
       const closerMatch = path.match(/^\/c\/([^/]+)\/closer\/([^/]+)$/);
       if (closerMatch && method === 'GET') {
@@ -37,6 +47,11 @@ export default {
       const masterMatch = path.match(/^\/c\/([^/]+)\/master\/([^/]+)$/);
       if (masterMatch && method === 'GET') {
         return htmlMaster(env, masterMatch[1], masterMatch[2]);
+      }
+
+      const lbHtmlMatch = path.match(/^\/c\/([^/]+)\/leaderboard\/?$/);
+      if (lbHtmlMatch && method === 'GET') {
+        return htmlLeaderboard(env, lbHtmlMatch[1]);
       }
 
       const landingMatch = path.match(/^\/c\/([^/]+)\/?$/);
@@ -136,27 +151,26 @@ function utcFromWallClock(year, month, day, hour, minute, tz) {
 }
 
 // Convert wall-clock (date+slotIndex) in srcTz → list of (CT date, CT slot index).
-// One source slot may map to one CT slot (always — slot is 15min, no DST 15min jump).
 function srcSlotToCt(dateStr, slotIdx, srcTz) {
   const [y, m, d] = dateStr.split('-').map(n => parseInt(n, 10));
-  const hh = Math.floor(slotIdx / 4);
-  const mm = (slotIdx % 4) * 15;
+  const hh = Math.floor(slotIdx / SLOTS_PER_HOUR);
+  const mm = (slotIdx % SLOTS_PER_HOUR) * SLOT_MINUTES;
   const utcMs = utcFromWallClock(y, m, d, hh, mm, srcTz);
   const ctParts = partsInTz(new Date(utcMs), CT);
   const ctDateStr = `${String(ctParts.year).padStart(4, '0')}-${String(ctParts.month).padStart(2, '0')}-${String(ctParts.day).padStart(2, '0')}`;
-  const ctSlot = ctParts.hour * 4 + Math.floor(ctParts.minute / 15);
+  const ctSlot = ctParts.hour * SLOTS_PER_HOUR + Math.floor(ctParts.minute / SLOT_MINUTES);
   return { date: ctDateStr, slot: ctSlot };
 }
 
 // Inverse: CT date+slot → wall-clock in destTz, returns { date, slot }.
 function ctSlotToTz(ctDateStr, ctSlotIdx, destTz) {
   const [y, m, d] = ctDateStr.split('-').map(n => parseInt(n, 10));
-  const hh = Math.floor(ctSlotIdx / 4);
-  const mm = (ctSlotIdx % 4) * 15;
+  const hh = Math.floor(ctSlotIdx / SLOTS_PER_HOUR);
+  const mm = (ctSlotIdx % SLOTS_PER_HOUR) * SLOT_MINUTES;
   const utcMs = utcFromWallClock(y, m, d, hh, mm, CT);
   const tzParts = partsInTz(new Date(utcMs), destTz);
   const dateStr = `${String(tzParts.year).padStart(4, '0')}-${String(tzParts.month).padStart(2, '0')}-${String(tzParts.day).padStart(2, '0')}`;
-  const slot = tzParts.hour * 4 + Math.floor(tzParts.minute / 15);
+  const slot = tzParts.hour * SLOTS_PER_HOUR + Math.floor(tzParts.minute / SLOT_MINUTES);
   return { date: dateStr, slot };
 }
 
@@ -334,6 +348,71 @@ async function apiState(env, campaign, date, closerSlug) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// API: leaderboard
+// Aggregates each closer's confirmed + scheduled hours over a date range.
+// range: 'day' (today only), 'week' (rolling 7d), 'month' (rolling 30d).
+// Cached in KV for LEADERBOARD_CACHE_TTL seconds.
+// ═══════════════════════════════════════════════════════════════════
+
+async function apiLeaderboard(env, campaign, range) {
+  if (!['day', 'week', 'month'].includes(range)) range = 'week';
+  const cfg = await getCampaign(env, campaign);
+  if (!cfg) return jsonResp({ ok: false, error: 'campaign not found' }, 404);
+
+  const cacheKey = `lb:${campaign}:${range}`;
+  const cached = await env.SCHEDULE_KV.get(cacheKey);
+  if (cached) {
+    return jsonResp({ ok: true, ...JSON.parse(cached), cached: true });
+  }
+
+  const daysBack = range === 'day' ? 1 : range === 'week' ? 7 : 30;
+  const today = ctToday();
+  const dates = [];
+  for (let i = 0; i < daysBack; i++) dates.push(addDaysIso(today, -i));
+
+  const closers = [];
+  for (const closer of cfg.closers) {
+    let confirmedSlots = 0, scheduledSlots = 0, daysActive = 0;
+    for (const d of dates) {
+      const k = `day:${campaign}:${d}:${closer.slug}`;
+      const raw = await env.SCHEDULE_KV.get(k);
+      if (!raw) continue;
+      const obj = JSON.parse(raw);
+      const sl = (obj.slots || []).length;
+      if (sl > 0) daysActive++;
+      scheduledSlots += sl;
+      if (obj.confirmedAt) confirmedSlots += sl;
+    }
+    closers.push({
+      slug: closer.slug,
+      name: closer.name,
+      hoursConfirmed: confirmedSlots * HOURS_PER_SLOT,
+      hoursScheduled: scheduledSlots * HOURS_PER_SLOT,
+      daysActive
+    });
+  }
+
+  closers.sort((a, b) =>
+    b.hoursConfirmed - a.hoursConfirmed ||
+    b.hoursScheduled - a.hoursScheduled ||
+    a.name.localeCompare(b.name)
+  );
+
+  const result = {
+    range,
+    daysBack,
+    today,
+    rangeStart: dates[dates.length - 1],
+    rangeEnd: today,
+    closers,
+    generatedAt: new Date().toISOString()
+  };
+  await env.SCHEDULE_KV.put(cacheKey, JSON.stringify(result), { expirationTtl: LEADERBOARD_CACHE_TTL });
+
+  return jsonResp({ ok: true, ...result });
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // HTML
 // ═══════════════════════════════════════════════════════════════════
 
@@ -373,6 +452,12 @@ async function htmlMaster(env, campaign, masterKey) {
     return new Response('Not authorized', { status: 401 });
   }
   return htmlResp(MASTER_HTML(campaign, cfg));
+}
+
+async function htmlLeaderboard(env, campaign) {
+  const cfg = await getCampaign(env, campaign);
+  if (!cfg) return new Response('Campaign not found', { status: 404 });
+  return htmlResp(LEADERBOARD_HTML(campaign, cfg));
 }
 
 // ─── Shared brand tokens ──────────────────────────────────────────────
@@ -480,6 +565,9 @@ header h1{margin:0;font-family:var(--serif);font-size:1.375rem;font-weight:500;l
 header .meta{font-size:0.6875rem;color:var(--ink-soft);font-family:var(--mono);letter-spacing:0.08em;text-transform:uppercase;margin-top:4px}
 select{padding:0.5rem 0.85rem;background:var(--paper);color:var(--ink);border:1px solid var(--rule);border-radius:999px;font-size:0.8125rem;font-family:inherit;cursor:pointer;transition:border-color 0.15s}
 select:hover{border-color:var(--ink-soft)}
+.header-right{display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap}
+.lb-link{padding:0.5rem 0.95rem;background:var(--ink);color:var(--paper);border:1px solid var(--ink);border-radius:999px;font-size:0.8125rem;font-family:inherit;text-decoration:none;font-weight:500;transition:background 0.15s,color 0.15s}
+.lb-link:hover{background:var(--accent);border-color:var(--accent)}
 main{padding:1.25rem 1rem 6rem;max-width:1400px;margin:0 auto}
 .banner{background:color-mix(in oklab,var(--accent-2) 16%,var(--paper));border:1px solid color-mix(in oklab,var(--accent-2) 35%,var(--rule));color:var(--ink);padding:1rem 1.125rem;border-radius:14px;margin-bottom:1rem;display:flex;flex-direction:column;gap:0.75rem;font-size:0.9375rem}
 .banner.confirmed{background:color-mix(in oklab,var(--good) 14%,var(--paper));border-color:color-mix(in oklab,var(--good) 35%,var(--rule))}
@@ -499,12 +587,12 @@ main{padding:1.25rem 1rem 6rem;max-width:1400px;margin:0 auto}
 .day-header .marker{display:inline-block;width:5px;height:5px;border-radius:999px;background:transparent;margin-top:1px}
 .hour-corner{position:sticky;left:0;background:var(--paper);z-index:2}
 .hour-label{display:flex;align-items:center;justify-content:flex-end;padding-right:6px;font-family:var(--mono);font-size:11px;color:var(--ink-soft);position:sticky;left:0;background:var(--paper);z-index:1;font-variant-numeric:tabular-nums}
-.day-cell{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;padding:1px}
-.quarter{height:28px;background:color-mix(in oklab,var(--bg-deep) 55%,white);border:1px solid transparent;border-radius:3px;cursor:pointer;transition:background 0.05s,border-color 0.05s}
+.day-cell{display:grid;grid-template-columns:repeat(2,1fr);gap:2px;padding:1px}
+.quarter{height:30px;background:color-mix(in oklab,var(--bg-deep) 55%,white);border:1px solid transparent;border-radius:4px;cursor:pointer;transition:background 0.05s,border-color 0.05s}
 .quarter:hover{background:color-mix(in oklab,var(--glow) 60%,var(--bg-deep))}
 .quarter.on{background:var(--accent);border-color:color-mix(in oklab,var(--accent) 60%,var(--ink));box-shadow:0 1px 0 rgba(0,0,0,0.05)}
 .quarter.on:hover{background:color-mix(in oklab,var(--accent) 85%,var(--ink))}
-@media (min-width:760px){.quarter{height:32px}}
+@media (min-width:760px){.quarter{height:36px}}
 .notes-card{background:var(--paper);border:1px solid var(--rule);border-radius:14px;padding:0.875rem 1rem;margin-top:1rem}
 .notes-card .lbl{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:0.08em;color:var(--ink-soft);font-weight:500;display:block;margin-bottom:0.5rem}
 .notes-card .lbl strong{color:var(--accent);font-weight:500;font-style:italic;font-family:var(--serif);text-transform:none;font-size:13px;letter-spacing:0;margin-left:2px}
@@ -532,15 +620,18 @@ textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px colo
     <h1>${esc(closer.name)}</h1>
     <div class="meta">${esc(cfg.displayName)}</div>
   </div>
-  <select id="tz">
-    <option value="America/Chicago">Central (CT)</option>
-    <option value="America/New_York">Eastern (ET)</option>
-    <option value="America/Denver">Mountain (MT)</option>
-    <option value="America/Los_Angeles">Pacific (PT)</option>
-    <option value="America/Phoenix">Arizona (no-DST)</option>
-    <option value="Pacific/Honolulu">Hawaii (HT)</option>
-    <option value="America/Anchorage">Alaska (AKT)</option>
-  </select>
+  <div class="header-right">
+    <a class="lb-link" href="/c/${esc(campaign)}/leaderboard">🏆 Leaderboard</a>
+    <select id="tz">
+      <option value="America/Chicago">Central (CT)</option>
+      <option value="America/New_York">Eastern (ET)</option>
+      <option value="America/Denver">Mountain (MT)</option>
+      <option value="America/Los_Angeles">Pacific (PT)</option>
+      <option value="America/Phoenix">Arizona (no-DST)</option>
+      <option value="Pacific/Honolulu">Hawaii (HT)</option>
+      <option value="America/Anchorage">Alaska (AKT)</option>
+    </select>
+  </div>
 </header>
 
 <main>
@@ -616,8 +707,8 @@ function fmtNotesLbl(n, iso) {
   return dt.toLocaleDateString('en-US', { weekday:'long', month:'short', day:'numeric', timeZone:'UTC' });
 }
 function slotLabel(slot) {
-  const h = Math.floor(slot/4) % 24;
-  const m = (slot%4)*15;
+  const h = Math.floor(slot/2) % 24;
+  const m = (slot%2)*30;
   const ap = h < 12 ? 'a' : 'p';
   const h12 = h%12 === 0 ? 12 : h%12;
   return h12 + (m>0 ? ':' + String(m).padStart(2,'0') : '') + ap;
@@ -649,7 +740,7 @@ function renderGrid() {
     grid.appendChild(h);
   }
 
-  // Hour rows
+  // Hour rows — 2 half-hour cells per hour
   for (let h = visibleHours[0]; h <= visibleHours[1]; h++) {
     const lbl = document.createElement('div');
     lbl.className = 'hour-label';
@@ -660,13 +751,13 @@ function renderGrid() {
       cell.className = 'day-cell';
       cell.dataset.date = iso;
       const slots = state.daySlots.get(iso) || new Set();
-      for (let q = 0; q < 4; q++) {
-        const slotIdx = h*4 + q;
-        const quarter = document.createElement('div');
-        quarter.className = 'quarter' + (slots.has(slotIdx) ? ' on' : '');
-        quarter.dataset.slot = slotIdx;
-        quarter.dataset.date = iso;
-        cell.appendChild(quarter);
+      for (let q = 0; q < 2; q++) {
+        const slotIdx = h*2 + q;
+        const half = document.createElement('div');
+        half.className = 'quarter' + (slots.has(slotIdx) ? ' on' : '');
+        half.dataset.slot = slotIdx;
+        half.dataset.date = iso;
+        cell.appendChild(half);
       }
       grid.appendChild(cell);
     }
@@ -715,8 +806,8 @@ function renderSummary() {
   if (totalSlots === 0) {
     sum.textContent = 'No hours';
   } else {
-    const hrs = (totalSlots * 0.25);
-    const hrsStr = (hrs % 1 === 0) ? String(hrs) : hrs.toFixed(2).replace(/0+$/,'').replace(/\\.$/, '');
+    const hrs = (totalSlots * 0.5);
+    const hrsStr = (hrs % 1 === 0) ? String(hrs) : hrs.toFixed(1).replace(/0+$/,'').replace(/\\.$/, '');
     sum.innerHTML = '<span class="num">' + hrsStr + ' hr</span> across <span class="num">' + dayCount + '</span> day' + (dayCount===1?'':'s');
   }
   document.getElementById('save').classList.toggle('dirty', state.dirty.size > 0);
@@ -876,11 +967,11 @@ async function loadStateForTz(tz) {
 
 function ctToTz(ctDate, ctSlot, destTz) {
   const [y,m,d] = ctDate.split('-').map(Number);
-  const hh = Math.floor(ctSlot / 4), mm = (ctSlot % 4) * 15;
+  const hh = Math.floor(ctSlot / 2), mm = (ctSlot % 2) * 30;
   const utcMs = utcFromWall(y, m, d, hh, mm, 'America/Chicago');
   const p = wallParts(new Date(utcMs), destTz);
   return { tzDate: p.year + '-' + String(p.month).padStart(2,'0') + '-' + String(p.day).padStart(2,'0'),
-           tzSlot: p.hour * 4 + Math.floor(p.minute/15) };
+           tzSlot: p.hour * 2 + Math.floor(p.minute/30) };
 }
 function wallParts(date, tz) {
   const dtf = new Intl.DateTimeFormat('en-US', { timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false });
@@ -927,6 +1018,9 @@ body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--ink)}
 header{background:color-mix(in oklab,var(--bg) 78%,white);backdrop-filter:saturate(140%) blur(8px);-webkit-backdrop-filter:saturate(140%) blur(8px);padding:1rem 1.25rem;border-bottom:1px solid var(--rule);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.6rem;position:sticky;top:0;z-index:10}
 h1{margin:0;font-family:var(--serif);font-size:1.375rem;font-weight:500;letter-spacing:-0.01em;line-height:1}
 .meta{font-size:0.6875rem;color:var(--ink-soft);font-family:var(--mono);letter-spacing:0.08em;text-transform:uppercase;margin-top:4px}
+.header-right{display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap}
+.lb-link{padding:0.5rem 0.95rem;background:var(--ink);color:var(--paper);border:1px solid var(--ink);border-radius:999px;font-size:0.8125rem;font-family:inherit;text-decoration:none;font-weight:500;transition:background 0.15s,color 0.15s}
+.lb-link:hover{background:var(--accent);border-color:var(--accent)}
 .day-pills{display:flex;overflow-x:auto;gap:0.5rem;padding:0.875rem 1.25rem;background:var(--bg);border-bottom:1px solid var(--rule);scrollbar-width:none}
 .day-pills::-webkit-scrollbar{display:none}
 .pill{flex-shrink:0;padding:0.55rem 1rem;border-radius:999px;background:var(--paper);border:1px solid var(--rule);color:var(--ink-soft);cursor:pointer;font-size:0.8125rem;font-weight:500;font-family:inherit;white-space:nowrap;transition:all 0.15s;display:flex;flex-direction:column;align-items:center;gap:1px;line-height:1.1}
@@ -962,7 +1056,10 @@ main{padding:1.25rem;overflow-x:auto;max-width:1600px;margin:0 auto}
     <h1>${esc(cfg.displayName)}</h1>
     <div class="meta">Manager · all times Central · auto-refresh 30s</div>
   </div>
-  <div class="meta" id="lastSync"></div>
+  <div class="header-right">
+    <a class="lb-link" href="/c/${esc(campaign)}/leaderboard">🏆 Leaderboard</a>
+    <span class="meta" id="lastSync"></span>
+  </div>
 </header>
 <div class="day-pills" id="pills"></div>
 <main>
@@ -982,9 +1079,9 @@ main{padding:1.25rem;overflow-x:auto;max-width:1600px;margin:0 auto}
 const campaign = ${JSON.stringify(campaign)};
 const visibleHours = ${JSON.stringify(visibleHours)};
 const VIEW_DAYS = ${VIEW_AHEAD_DAYS};
-const SLOTS_PER_DAY = 96;
-const SLOT_START = visibleHours[0] * 4;
-const SLOT_END = (visibleHours[1] + 1) * 4;
+const SLOTS_PER_DAY = 48;
+const SLOT_START = visibleHours[0] * 2;
+const SLOT_END = (visibleHours[1] + 1) * 2;
 const SLOT_COUNT = SLOT_END - SLOT_START;
 let selectedDate = null;
 
@@ -1008,8 +1105,8 @@ function fmtPillDate(iso) {
   return new Date(Date.UTC(y, m-1, da)).toLocaleDateString('en-US', { month:'short', day:'numeric', timeZone:'UTC' });
 }
 function slotLabel(s) {
-  const h = Math.floor(s/4) % 24;
-  const m = (s%4)*15;
+  const h = Math.floor(s/2) % 24;
+  const m = (s%2)*30;
   const ap = h < 12 ? 'a' : 'p';
   const h12 = h%12 === 0 ? 12 : h%12;
   return h12 + (m>0 ? ':' + String(m).padStart(2,'0') : '') + ap;
@@ -1034,11 +1131,11 @@ function renderAxis() {
   axis.innerHTML = '<div></div><div class="axis-track" id="axisTrack"></div>';
   const track = document.getElementById('axisTrack');
   for (let h = visibleHours[0]; h <= visibleHours[1]; h++) {
-    const x = ((h*4 - SLOT_START) / SLOT_COUNT) * 100;
+    const x = ((h*2 - SLOT_START) / SLOT_COUNT) * 100;
     const tick = document.createElement('div');
     tick.className = 'tick hour';
     tick.style.left = x + '%';
-    tick.textContent = slotLabel(h*4);
+    tick.textContent = slotLabel(h*2);
     track.appendChild(tick);
   }
 }
@@ -1156,6 +1253,180 @@ async function loadDay() {
 selectedDate = ctToday();
 loadDay();
 setInterval(loadDay, 30000);
+</script></body></html>`;
+}
+
+// ─── Leaderboard (Top Dog / Bulldog / Runner Up) ────────────────────
+function LEADERBOARD_HTML(campaign, cfg) {
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(cfg.displayName)} — Leaderboard</title>
+${BRAND_HEAD}
+<style>
+${BRAND_VARS}
+body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--ink);min-height:100vh}
+header{background:color-mix(in oklab,var(--bg) 78%,white);backdrop-filter:saturate(140%) blur(8px);-webkit-backdrop-filter:saturate(140%) blur(8px);padding:1rem 1.25rem;border-bottom:1px solid var(--rule);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.6rem;position:sticky;top:0;z-index:10}
+h1{margin:0;font-family:var(--serif);font-size:1.375rem;font-weight:500;letter-spacing:-0.01em;line-height:1}
+h1 em{font-style:italic;color:var(--accent);font-weight:400}
+.meta{font-size:0.6875rem;color:var(--ink-soft);font-family:var(--mono);letter-spacing:0.08em;text-transform:uppercase;margin-top:4px}
+.back-link{padding:0.5rem 0.95rem;background:transparent;color:var(--ink-soft);border:1px solid var(--rule);border-radius:999px;font-size:0.8125rem;font-family:inherit;text-decoration:none;transition:color 0.15s,border-color 0.15s}
+.back-link:hover{color:var(--ink);border-color:var(--ink-soft)}
+main{max-width:780px;margin:0 auto;padding:1.5rem 1rem 4rem}
+.range-pills{display:flex;gap:0.4rem;justify-content:center;margin-bottom:1.5rem;background:var(--paper);border:1px solid var(--rule);border-radius:999px;padding:0.3rem;width:fit-content;margin-left:auto;margin-right:auto}
+.range-pill{padding:0.5rem 1.1rem;border-radius:999px;background:transparent;color:var(--ink-soft);border:none;font-family:inherit;font-size:0.8125rem;font-weight:500;cursor:pointer;transition:background 0.15s,color 0.15s;letter-spacing:-0.005em}
+.range-pill:hover{color:var(--ink)}
+.range-pill.active{background:var(--ink);color:var(--paper)}
+.range-meta{text-align:center;font-family:var(--mono);font-size:0.6875rem;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:1.75rem}
+.podium{display:flex;flex-direction:column;gap:0.75rem;margin-bottom:1.5rem}
+.row{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:1rem;padding:1.1rem 1.25rem;border-radius:14px;border:1px solid var(--rule);background:var(--paper);box-shadow:0 1px 0 rgba(255,255,255,0.45) inset}
+.row .medal{font-size:2rem;line-height:1;width:3rem;text-align:center;flex-shrink:0}
+.row .body{display:flex;flex-direction:column;gap:0.25rem;min-width:0}
+.row .title{font-family:var(--mono);font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--ink-soft);font-weight:500}
+.row .name{font-family:var(--serif);font-size:1.375rem;font-weight:500;letter-spacing:-0.01em;line-height:1.1;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .stats{font-size:0.75rem;color:var(--ink-soft);font-family:var(--mono);letter-spacing:0.02em;font-variant-numeric:tabular-nums}
+.row .hours{font-family:var(--serif);font-size:1.625rem;font-weight:500;color:var(--ink);text-align:right;font-variant-numeric:tabular-nums;letter-spacing:-0.01em}
+.row .hours .unit{font-family:var(--mono);font-size:0.75rem;color:var(--ink-soft);font-weight:500;text-transform:uppercase;letter-spacing:0.08em;margin-left:0.25rem}
+.row.gold{background:linear-gradient(135deg,#FFE69A 0%,#F5C84A 55%,#C28A1B 100%);border-color:#B07F1B;color:#3A2706;position:relative;overflow:hidden;box-shadow:0 18px 40px -18px rgba(180,120,30,0.55),0 1px 0 rgba(255,255,255,0.6) inset}
+.row.gold::before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 18% 20%,rgba(255,255,255,0.45) 0%,transparent 60%);pointer-events:none}
+.row.gold .title,.row.gold .stats{color:rgba(58,39,6,0.7)}
+.row.gold .name,.row.gold .hours{color:#2A1B10;position:relative}
+.row.gold .hours .unit{color:rgba(58,39,6,0.7)}
+.row.silver{background:linear-gradient(135deg,#F0F0F2 0%,#C8CBD0 60%,#8E929A 100%);border-color:#7A7E86;color:#1F2228;box-shadow:0 14px 32px -16px rgba(80,90,110,0.5),0 1px 0 rgba(255,255,255,0.55) inset}
+.row.silver .title,.row.silver .stats{color:rgba(31,34,40,0.65)}
+.row.silver .hours .unit{color:rgba(31,34,40,0.65)}
+.row.bronze{background:linear-gradient(135deg,#E8A475 0%,#B8702C 55%,#8A4F18 100%);border-color:#7A4515;color:#2D1808;box-shadow:0 14px 32px -16px rgba(140,80,30,0.55),0 1px 0 rgba(255,255,255,0.5) inset}
+.row.bronze .title,.row.bronze .stats{color:rgba(45,24,8,0.7)}
+.row.bronze .name,.row.bronze .hours{color:#2D1808}
+.row.bronze .hours .unit{color:rgba(45,24,8,0.7)}
+.also-ran{display:flex;flex-direction:column;gap:0.5rem}
+.also-ran .row{padding:0.75rem 1.25rem;background:var(--paper)}
+.also-ran .row .medal{font-family:var(--mono);font-size:1rem;font-weight:500;color:var(--ink-soft);width:1.75rem}
+.also-ran .row .name{font-size:1rem;font-weight:500;font-family:var(--sans)}
+.also-ran .row .hours{font-size:1.125rem;font-family:var(--sans);font-weight:500}
+.empty{text-align:center;padding:3rem 1rem;color:var(--ink-soft);font-style:italic;font-family:var(--serif);font-size:1.125rem}
+.loading{text-align:center;padding:3rem 1rem;color:var(--ink-soft);font-family:var(--mono);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em}
+@media (max-width:640px){
+  .row{padding:0.875rem 1rem;gap:0.75rem}
+  .row .medal{font-size:1.625rem;width:2.25rem}
+  .row .name{font-size:1.125rem}
+  .row .hours{font-size:1.25rem}
+}
+</style></head>
+<body>
+<header>
+  <div>
+    <h1>🏆 <em>Leaderboard</em></h1>
+    <div class="meta">${esc(cfg.displayName)}</div>
+  </div>
+  <a class="back-link" href="/c/${esc(campaign)}">← Back</a>
+</header>
+<main>
+  <div class="range-pills" role="tablist">
+    <button class="range-pill" data-range="day">Today</button>
+    <button class="range-pill active" data-range="week">This Week</button>
+    <button class="range-pill" data-range="month">This Month</button>
+  </div>
+  <div class="range-meta" id="rangeMeta">Loading…</div>
+  <div id="podium" class="podium"></div>
+  <div id="alsoRan" class="also-ran"></div>
+</main>
+<script>
+const campaign = ${JSON.stringify(campaign)};
+const TIER = [
+  { idx: 0, cls: 'gold',   medal: '🥇', title: 'Top Dog' },
+  { idx: 1, cls: 'silver', medal: '🥈', title: 'Bulldog' },
+  { idx: 2, cls: 'bronze', medal: '🥉', title: 'Runner Up' }
+];
+let currentRange = 'week';
+
+function fmtHours(h) {
+  if (h === 0) return '0';
+  if (h % 1 === 0) return String(h);
+  return h.toFixed(1);
+}
+function fmtDate(d) {
+  if (!d) return '';
+  const [y,m,da] = d.split('-').map(Number);
+  return new Date(Date.UTC(y, m-1, da)).toLocaleDateString('en-US', { month:'short', day:'numeric', timeZone:'UTC' });
+}
+
+async function load(range) {
+  currentRange = range;
+  document.querySelectorAll('.range-pill').forEach(p => p.classList.toggle('active', p.dataset.range === range));
+  document.getElementById('podium').innerHTML = '<div class="loading">Loading…</div>';
+  document.getElementById('alsoRan').innerHTML = '';
+  document.getElementById('rangeMeta').textContent = 'Loading…';
+  try {
+    const r = await fetch('/api/leaderboard/' + campaign + '?range=' + range);
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'failed');
+    render(j);
+  } catch (e) {
+    document.getElementById('podium').innerHTML = '<div class="empty">' + (e.message || 'Failed to load') + '</div>';
+    document.getElementById('rangeMeta').textContent = '';
+  }
+}
+
+function render(d) {
+  const closers = (d.closers || []).filter(c => c.hoursConfirmed > 0 || c.hoursScheduled > 0);
+  const meta = document.getElementById('rangeMeta');
+  const rangeLbl = d.range === 'day' ? 'Today, ' + fmtDate(d.today) :
+                   d.range === 'week' ? 'Last 7 days · ' + fmtDate(d.rangeStart) + ' – ' + fmtDate(d.rangeEnd) :
+                   'Last 30 days · ' + fmtDate(d.rangeStart) + ' – ' + fmtDate(d.rangeEnd);
+  meta.textContent = rangeLbl + ' · all times Central';
+
+  const podium = document.getElementById('podium');
+  const alsoRan = document.getElementById('alsoRan');
+  podium.innerHTML = '';
+  alsoRan.innerHTML = '';
+
+  if (closers.length === 0) {
+    podium.innerHTML = '<div class="empty">No confirmed hours in this range yet.<br>Closers, lock in your today\\'s hours from your schedule page.</div>';
+    return;
+  }
+
+  const top3 = closers.slice(0, 3);
+  for (const tier of TIER) {
+    const c = top3[tier.idx];
+    if (!c) continue;
+    const row = document.createElement('div');
+    row.className = 'row ' + tier.cls;
+    row.innerHTML =
+      '<div class="medal">' + tier.medal + '</div>' +
+      '<div class="body">' +
+        '<div class="title">' + tier.title + '</div>' +
+        '<div class="name">' + escHtml(c.name) + '</div>' +
+        '<div class="stats">' + fmtHours(c.hoursConfirmed) + ' confirmed · ' + fmtHours(c.hoursScheduled) + ' scheduled · ' + c.daysActive + ' day' + (c.daysActive===1?'':'s') + '</div>' +
+      '</div>' +
+      '<div class="hours">' + fmtHours(c.hoursConfirmed) + '<span class="unit">hrs</span></div>';
+    podium.appendChild(row);
+  }
+
+  const rest = closers.slice(3);
+  for (let i = 0; i < rest.length; i++) {
+    const c = rest[i];
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML =
+      '<div class="medal">' + (i + 4) + '.</div>' +
+      '<div class="body">' +
+        '<div class="name">' + escHtml(c.name) + '</div>' +
+        '<div class="stats">' + fmtHours(c.hoursScheduled) + ' scheduled · ' + c.daysActive + ' day' + (c.daysActive===1?'':'s') + '</div>' +
+      '</div>' +
+      '<div class="hours">' + fmtHours(c.hoursConfirmed) + '<span class="unit">hrs</span></div>';
+    alsoRan.appendChild(row);
+  }
+}
+
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+document.querySelectorAll('.range-pill').forEach(p => {
+  p.onclick = () => load(p.dataset.range);
+});
+
+load('week');
 </script></body></html>`;
 }
 
