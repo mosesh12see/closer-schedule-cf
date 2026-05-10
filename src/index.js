@@ -9,6 +9,7 @@ const SLOTS_PER_DAY = 48; // 24h * 2
 const SLOTS_PER_HOUR = 2;
 const HOURS_PER_SLOT = 0.5;
 const SESSION_TTL = 300;
+const OPEN_ACCESS_SESSION_TTL = 24 * 3600; // 24h for openAccess personal-dashboard sessions
 const PIN_BAN_TTL = 900;
 const PIN_BAN_THRESHOLD = 5;
 const DAY_TTL = 35 * 24 * 3600; // 35d so leaderboard month range works
@@ -569,7 +570,14 @@ async function htmlCloser(env, campaign, closerSlug, url) {
   if (!cfg) return new Response('Campaign not found', { status: 404 });
   const closer = cfg.closers.find(c => c.slug === closerSlug);
   if (!closer) return new Response('Closer not found', { status: 404 });
-  return htmlResp(CLOSER_HTML(campaign, cfg, closer));
+  let injectedToken = null;
+  if (cfg.openAccess) {
+    injectedToken = randomToken(16);
+    await env.SCHEDULE_KV.put(`session:${injectedToken}`, JSON.stringify({
+      campaign, closerSlug, exp: Date.now() + OPEN_ACCESS_SESSION_TTL * 1000
+    }), { expirationTtl: OPEN_ACCESS_SESSION_TTL });
+  }
+  return htmlResp(CLOSER_HTML(campaign, cfg, closer, injectedToken));
 }
 
 async function htmlMaster(env, campaign, masterKey) {
@@ -995,7 +1003,7 @@ loadAll();
 }
 
 // ─── Closer scheduling page (multi-day grid) ────────────────────────
-function CLOSER_HTML(campaign, cfg, closer) {
+function CLOSER_HTML(campaign, cfg, closer, injectedToken) {
   const visibleHours = cfg.visibleHours || [6, 23];
   return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1110,8 +1118,14 @@ const VIEW_DAYS = ${VIEW_AHEAD_DAYS};
 const tokenKey = 'schedToken_' + campaign + '_' + closerSlug;
 const defaultTzKey = 'schedDefaultTz_' + campaign + '_' + closerSlug;
 
-const token = sessionStorage.getItem(tokenKey);
+const INJECTED_TOKEN = ${injectedToken ? JSON.stringify(injectedToken) : 'null'};
+const token = INJECTED_TOKEN || sessionStorage.getItem(tokenKey);
 if (!token) { location.href = '/c/' + campaign; }
+if (INJECTED_TOKEN) {
+  sessionStorage.setItem(tokenKey, INJECTED_TOKEN);
+  sessionStorage.setItem('schedName_' + campaign + '_' + closerSlug, ${JSON.stringify(closer.name)});
+  sessionStorage.setItem('schedDefaultTz_' + campaign + '_' + closerSlug, ${JSON.stringify(closer.defaultTz || 'America/Chicago')});
+}
 
 const tzSel = document.getElementById('tz');
 tzSel.value = sessionStorage.getItem(defaultTzKey) || ${JSON.stringify(closer.defaultTz || CT)};

@@ -48,6 +48,9 @@ const ROSTERS = {
     { slug: 'dayne',     name: 'Dayne Hall',          defaultTz: 'America/Phoenix' },
     { slug: 'thomas',    name: 'Thomas Quist',        defaultTz: 'America/Phoenix' },
   ],
+  'steve-iul': [
+    { slug: 'steve',     name: 'Steve Lyman',         defaultTz: 'America/Denver' },
+  ],
 };
 
 const roster = ROSTERS[campaignSlug];
@@ -131,6 +134,8 @@ const cfg = {
   closers: closers.map(c => c.config),
 };
 if (existing.cfg?.openAccess) cfg.openAccess = true;
+// Single-closer rosters are personal dashboards — no PIN, URL = auth.
+if (roster.length === 1) cfg.openAccess = true;
 
 fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 
@@ -139,19 +144,27 @@ const lines = [
   `Generated ${new Date().toISOString()}`,
   '',
   `Master URL:`,
-  `  https://schedule.cancelmysolar.info/c/${campaignSlug}/master/${masterKey}`,
+  `  https://transfers.vertacall.net/c/${campaignSlug}/master/${masterKey}`,
   '',
-  `Admin URL:    https://schedule.cancelmysolar.info/c/${campaignSlug}/admin`,
+  `Admin URL:    https://transfers.vertacall.net/c/${campaignSlug}/admin`,
   `Admin PIN:    ${adminCode}`,
   '',
   `Closer URLs + PINs:`,
 ];
 for (const c of closers) {
-  lines.push(`  ${c.plain.name.padEnd(22)}  https://schedule.cancelmysolar.info/c/${campaignSlug}        PIN: ${c.plain.pin}`);
+  if (cfg.openAccess) {
+    lines.push(`  ${c.plain.name.padEnd(22)}  https://transfers.vertacall.net/c/${campaignSlug}/schedule/${c.plain.slug}        (no PIN — personal link)`);
+  } else {
+    lines.push(`  ${c.plain.name.padEnd(22)}  https://transfers.vertacall.net/c/${campaignSlug}        PIN: ${c.plain.pin}`);
+  }
 }
 lines.push('');
-lines.push(`Each closer goes to:  https://schedule.cancelmysolar.info/c/${campaignSlug}`);
-lines.push(`Picks their name, types their PIN, schedules their hours.`);
+if (cfg.openAccess) {
+  lines.push(`Each closer's link IS their auth — no PIN. Bookmark and go.`);
+} else {
+  lines.push(`Each closer goes to:  https://transfers.vertacall.net/c/${campaignSlug}`);
+  lines.push(`Picks their name, types their PIN, schedules their hours.`);
+}
 lines.push('');
 fs.writeFileSync(secretsPath, lines.join('\n'));
 

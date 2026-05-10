@@ -1,0 +1,19 @@
+{
+  "name": "steve-iul",
+  "displayName": "Steve IUL Insurance",
+  "visibleHours": [
+    6,
+    23
+  ],
+  "masterKeyHash": "e6a41367de11ebe102e3739aff94ea8bff03485f217c865ea23d871087dde784",
+  "adminCodeHash": "9d350489359ccfb94ffe8837ee58c80a9669cc7145dcc98cc43e121197993953",
+  "closers": [
+    {
+      "slug": "steve",
+      "name": "Steve Lyman",
+      "defaultTz": "America/Denver",
+      "pinHash": "b35c566b5c7b402580a99ac7269bdea7355af849101045543a5d1d3e9539744e"
+    }
+  ],
+  "openAccess": true
+}
