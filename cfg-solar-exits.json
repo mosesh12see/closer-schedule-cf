@@ -6,7 +6,7 @@
     23
   ],
   "masterKeyHash": "1f00cb133e54708728c6da68f0c6a3c390a2d24c976cfaacc78cfa136116f2fc",
-  "adminCodeHash": "cd0e7bce6a7adcfa6369f76bd4b0b2a5531ff561a9b07211c0f1627532af5253",
+  "adminCodeHash": "408e9bdd3afebbfae7e73acbf61a963560f58d1e76881203941b89e3651e948f",
   "closers": [
     {
       "slug": "mauricio",
@@ -61,6 +61,12 @@
       "name": "Alexandra Skouzes",
       "defaultTz": "America/Chicago",
       "pinHash": "e2a2b99152fdb3cfdb7dd1d8baf5dc826bf65fe069eaebe9d2a1b69fcb3f5e77"
+    },
+    {
+      "slug": "joshua",
+      "name": "Joshua S Drillette",
+      "defaultTz": "America/Chicago",
+      "pinHash": "214e91277a7dd9d49cbaf41ca2fcc3c4e69a644311a2e7d724f3e78245b22c8c"
     }
   ]
 }
