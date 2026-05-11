@@ -43,6 +43,7 @@ const ROSTERS = {
     { slug: 'dpena',     name: 'Daniel Pena',         defaultTz: 'America/Chicago' },
     { slug: 'draines',   name: 'Daniel Raines',       defaultTz: 'America/Chicago' },
     { slug: 'alexandra', name: 'Alexandra Skouzes',   defaultTz: 'America/Chicago' },
+    { slug: 'joshua',    name: 'Joshua S Drillette',  defaultTz: 'America/Chicago' },
   ],
   'capital-energy-az': [
     { slug: 'dayne',     name: 'Dayne Hall',          defaultTz: 'America/Phoenix' },
