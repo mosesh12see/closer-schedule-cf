@@ -408,7 +408,7 @@ function countShifts(slotsIter) {
 
 function computeCtDateSpanFromSrc(srcDate, srcTz) {
   const dates = new Set();
-  for (const slot of [0, 95]) {
+  for (const slot of [0, SLOTS_PER_DAY - 1]) {
     const { date } = srcSlotToCt(srcDate, slot, srcTz);
     dates.add(date);
   }
