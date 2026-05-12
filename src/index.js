@@ -13,7 +13,8 @@ const OPEN_ACCESS_SESSION_TTL = 24 * 3600; // 24h for openAccess personal-dashbo
 const PIN_BAN_TTL = 900;
 const PIN_BAN_THRESHOLD = 5;
 const DAY_TTL = 35 * 24 * 3600; // 35d so leaderboard month range works
-const VIEW_AHEAD_DAYS = 7;
+const VIEW_AHEAD_DAYS = 7;       // manager Gantt pill range
+const CLOSER_VIEW_DAYS = 3;      // closer painter window (today + next 2)
 const LEADERBOARD_CACHE_TTL = 60;
 
 export default {
@@ -282,7 +283,7 @@ async function apiAdminAuth(request, env) {
 
 async function apiSave(request, env) {
   const body = await request.json().catch(() => ({}));
-  const { token, date, srcTz, slots, notes } = body;
+  const { token, date, srcTz, slots, notes, off } = body;
 
   const sess = await checkSession(env, token);
   if (!sess) return jsonResp({ ok: false, error: 'session expired' }, 401);
@@ -290,11 +291,13 @@ async function apiSave(request, env) {
     return jsonResp({ ok: false, error: 'missing fields' }, 400);
   }
 
-  // Enforce: max 2 shifts per day (i.e. at most one break between blocks).
-  const cleanedSrcSlots = (slots || [])
+  const isOff = off === true;
+
+  // Enforce: max 2 shifts per day (skip when marking N/A — no shifts to validate).
+  const cleanedSrcSlots = isOff ? [] : (slots || [])
     .filter(s => typeof s === 'number' && s >= 0 && s < SLOTS_PER_DAY)
     .sort((a, b) => a - b);
-  if (countShifts(cleanedSrcSlots) > 2) {
+  if (!isOff && countShifts(cleanedSrcSlots) > 2) {
     return jsonResp({ ok: false, error: 'max 2 shifts per day (one break max)' }, 400);
   }
 
@@ -314,7 +317,15 @@ async function apiSave(request, env) {
     const prevRaw = await env.SCHEDULE_KV.get(k);
     const prev = prevRaw ? JSON.parse(prevRaw) : { slotsBySrcDate: {}, confirmedAt: null, notes: '' };
     prev.slotsBySrcDate = prev.slotsBySrcDate || {};
-    prev.slotsBySrcDate[date] = Array.from(byCtDate.get(ctDate) || []).sort((a, b) => a - b);
+    if (isOff) {
+      // Clear ALL src-date buckets — marking N/A wipes the whole CT day.
+      prev.slotsBySrcDate = {};
+      prev.off = true;
+      prev.markedOffAt = nowIso;
+    } else {
+      prev.slotsBySrcDate[date] = Array.from(byCtDate.get(ctDate) || []).sort((a, b) => a - b);
+      if (prev.off) { prev.off = false; prev.markedOffAt = null; }
+    }
 
     prev.lastSrcTz = srcTz;
     prev.submittedAt = nowIso;
@@ -339,7 +350,7 @@ async function apiSave(request, env) {
 
 async function apiTeamSave(request, env) {
   const body = await request.json().catch(() => ({}));
-  const { campaign, closerSlug, date, srcTz, slots } = body;
+  const { campaign, closerSlug, date, srcTz, slots, off } = body;
   if (!campaign || !closerSlug) return jsonResp({ ok: false, error: 'missing fields' }, 400);
 
   const cfg = await getCampaign(env, campaign);
@@ -352,10 +363,12 @@ async function apiTeamSave(request, env) {
     return jsonResp({ ok: false, error: 'missing fields' }, 400);
   }
 
-  const cleanedSrcSlots = (slots || [])
+  const isOff = off === true;
+
+  const cleanedSrcSlots = isOff ? [] : (slots || [])
     .filter(s => typeof s === 'number' && s >= 0 && s < SLOTS_PER_DAY)
     .sort((a, b) => a - b);
-  if (countShifts(cleanedSrcSlots) > 2) {
+  if (!isOff && countShifts(cleanedSrcSlots) > 2) {
     return jsonResp({ ok: false, error: 'max 2 shifts per day' }, 400);
   }
 
@@ -374,7 +387,14 @@ async function apiTeamSave(request, env) {
     const prevRaw = await env.SCHEDULE_KV.get(k);
     const prev = prevRaw ? JSON.parse(prevRaw) : { slotsBySrcDate: {}, confirmedAt: null, notes: '' };
     prev.slotsBySrcDate = prev.slotsBySrcDate || {};
-    prev.slotsBySrcDate[date] = Array.from(byCtDate.get(ctDate) || []).sort((a, b) => a - b);
+    if (isOff) {
+      prev.slotsBySrcDate = {};
+      prev.off = true;
+      prev.markedOffAt = nowIso;
+    } else {
+      prev.slotsBySrcDate[date] = Array.from(byCtDate.get(ctDate) || []).sort((a, b) => a - b);
+      if (prev.off) { prev.off = false; prev.markedOffAt = null; }
+    }
     prev.lastSrcTz = srcTz;
     prev.submittedAt = nowIso;
     if (prev.confirmedAt && ctDate >= ctToday()) prev.confirmedAt = null;
@@ -1029,16 +1049,25 @@ main{padding:1.25rem 1rem 6rem;max-width:1400px;margin:0 auto}
 .info-note{background:color-mix(in oklab,var(--accent-2) 12%,var(--paper));border:1px solid color-mix(in oklab,var(--accent-2) 32%,var(--rule));color:var(--ink);padding:0.7rem 1rem;border-radius:12px;margin-bottom:1rem;font-size:0.8125rem;line-height:1.45}
 .info-note strong{font-family:var(--serif);font-style:italic;font-weight:500;color:var(--accent);margin-right:0.25rem}
 .schedule-card{background:var(--paper);border:1px solid var(--rule);border-radius:14px;padding:0.625rem;overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--ink-faint) transparent;box-shadow:0 1px 0 rgba(255,255,255,0.5) inset}
-.schedule-grid{display:grid;grid-template-columns:2.4rem repeat(7,minmax(74px,1fr));gap:4px;user-select:none;-webkit-user-select:none;touch-action:pan-y;min-width:600px}
-.day-header{text-align:center;padding:9px 4px 11px;cursor:pointer;border-radius:8px 8px 0 0;border-bottom:2px solid transparent;transition:background 0.15s,border-color 0.15s;display:flex;flex-direction:column;align-items:center;gap:3px}
+.schedule-grid{display:grid;grid-template-columns:2.4rem repeat(var(--cols,3),minmax(120px,1fr));gap:4px;user-select:none;-webkit-user-select:none;touch-action:pan-y}
+.day-header{position:relative;text-align:center;padding:9px 4px 11px;cursor:pointer;border-radius:8px 8px 0 0;border-bottom:2px solid transparent;transition:background 0.15s,border-color 0.15s;display:flex;flex-direction:column;align-items:center;gap:3px}
 .day-header:hover{background:color-mix(in oklab,var(--bg) 65%,white)}
 .day-header.today .day-name{color:var(--accent)}
 .day-header.has-hours .marker{background:var(--accent)}
 .day-header.confirmed .marker{background:var(--good)}
 .day-header.selected{background:color-mix(in oklab,var(--accent) 10%,var(--paper));border-bottom-color:var(--accent)}
+.day-header.off{background:color-mix(in oklab,#c2422d 14%,var(--paper))}
+.day-header.off .day-name,.day-header.off .day-date{color:#8a2a17}
 .day-header .day-name{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:var(--ink-soft);font-weight:500;line-height:1}
 .day-header .day-date{font-family:var(--serif);font-size:14px;font-weight:500;color:var(--ink);letter-spacing:-0.01em;line-height:1.1}
 .day-header .marker{display:inline-block;width:5px;height:5px;border-radius:999px;background:transparent;margin-top:1px}
+.off-toggle{position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:999px;border:1px solid var(--rule);background:var(--paper);color:var(--ink-soft);display:flex;align-items:center;justify-content:center;font-size:13px;line-height:1;font-family:var(--sans);cursor:pointer;transition:all 0.12s;padding:0;font-weight:500}
+.off-toggle:hover{border-color:#c2422d;color:#c2422d}
+.off-toggle.on{background:#c2422d;border-color:#c2422d;color:#fff;box-shadow:0 1px 3px rgba(140,40,20,0.3)}
+.off-toggle.on:hover{background:#a8351f}
+.day-cell.off{background:repeating-linear-gradient(45deg,color-mix(in oklab,#c2422d 14%,var(--paper)) 0,color-mix(in oklab,#c2422d 14%,var(--paper)) 8px,color-mix(in oklab,#c2422d 6%,var(--paper)) 8px,color-mix(in oklab,#c2422d 6%,var(--paper)) 16px);border-radius:4px;pointer-events:none}
+.day-cell.off .quarter{visibility:hidden}
+.off-badge{position:absolute;top:42px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-size:9.5px;font-weight:500;letter-spacing:0.12em;color:#8a2a17;background:color-mix(in oklab,#c2422d 18%,var(--paper));padding:2px 7px;border-radius:999px;border:1px solid color-mix(in oklab,#c2422d 35%,var(--rule));pointer-events:none}
 .hour-corner{position:sticky;left:0;background:var(--paper);z-index:2}
 .hour-label{display:flex;align-items:center;justify-content:flex-end;padding-right:6px;font-family:var(--mono);font-size:11px;color:var(--ink-soft);position:sticky;left:0;background:var(--paper);z-index:1;font-variant-numeric:tabular-nums}
 .day-cell{display:grid;grid-template-columns:repeat(2,1fr);gap:2px;padding:1px}
@@ -1092,7 +1121,7 @@ textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px colo
   <div class="info-note"><strong>Two-shift rule:</strong> Pick up to two blocks per day with one break between them (e.g. 8a–11a, then back 1p–5p). The grid won't let you flicker on-and-off all day.</div>
   <div id="banner"></div>
   <div class="schedule-card">
-    <div class="schedule-grid" id="grid"></div>
+    <div class="schedule-grid" id="grid" style="--cols:${CLOSER_VIEW_DAYS}"></div>
   </div>
   <div class="notes-card">
     <span class="lbl">Notes for <strong id="notesDayLbl">today</strong></span>
@@ -1102,7 +1131,6 @@ textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px colo
 
 <div class="save-bar">
   <div class="save-bar-inner">
-    <button class="clear" id="clear">Clear day</button>
     <span class="summary" id="summary">No hours</span>
     <button class="save" id="save">Save</button>
   </div>
@@ -1114,7 +1142,7 @@ textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px colo
 const campaign = ${JSON.stringify(campaign)};
 const closerSlug = ${JSON.stringify(closer.slug)};
 const visibleHours = ${JSON.stringify(visibleHours)};
-const VIEW_DAYS = ${VIEW_AHEAD_DAYS};
+const VIEW_DAYS = ${CLOSER_VIEW_DAYS};
 const tokenKey = 'schedToken_' + campaign + '_' + closerSlug;
 const defaultTzKey = 'schedDefaultTz_' + campaign + '_' + closerSlug;
 
@@ -1135,6 +1163,7 @@ const state = {
   selectedDate: null,
   daySlots: new Map(),
   dayConfirmed: new Map(),
+  dayOff: new Map(),
   notes: new Map(),
   dirty: new Set()
 };
@@ -1190,14 +1219,21 @@ function renderGrid() {
   grid.appendChild(corner);
   for (const {iso, n} of days) {
     const h = document.createElement('div');
-    h.className = 'day-header' + (n === 0 ? ' today' : '') + (iso === state.selectedDate ? ' selected' : '');
-    if ((state.daySlots.get(iso) || new Set()).size > 0) h.classList.add('has-hours');
+    const isOff = state.dayOff.get(iso) === true;
+    h.className = 'day-header' + (n === 0 ? ' today' : '') + (iso === state.selectedDate ? ' selected' : '') + (isOff ? ' off' : '');
+    if (!isOff && (state.daySlots.get(iso) || new Set()).size > 0) h.classList.add('has-hours');
     if (state.dayConfirmed.get(iso)) h.classList.add('confirmed');
-    h.innerHTML = '<span class="day-name">' + fmtDayName(n, iso) + '</span>' +
+    h.innerHTML = '<button type="button" class="off-toggle' + (isOff ? ' on' : '') + '" data-off-date="' + iso + '" title="' + (isOff ? 'Available again' : 'Mark unavailable') + '" aria-label="' + (isOff ? 'Mark available' : 'Mark off') + '">' + (isOff ? '✕' : '×') + '</button>' +
+                  '<span class="day-name">' + fmtDayName(n, iso) + '</span>' +
                   '<span class="day-date">' + fmtDayDate(iso) + '</span>' +
-                  '<span class="marker"></span>';
+                  '<span class="marker"></span>' +
+                  (isOff ? '<span class="off-badge">N/A</span>' : '');
     h.dataset.date = iso;
-    h.onclick = () => { state.selectedDate = iso; renderAll(); };
+    h.onclick = (e) => {
+      if (e.target.closest('.off-toggle')) return;
+      state.selectedDate = iso;
+      renderAll();
+    };
     grid.appendChild(h);
   }
 
@@ -1209,7 +1245,8 @@ function renderGrid() {
     grid.appendChild(lbl);
     for (const {iso} of days) {
       const cell = document.createElement('div');
-      cell.className = 'day-cell';
+      const isOff = state.dayOff.get(iso) === true;
+      cell.className = 'day-cell' + (isOff ? ' off' : '');
       cell.dataset.date = iso;
       const slots = state.daySlots.get(iso) || new Set();
       for (let q = 0; q < 2; q++) {
@@ -1224,6 +1261,31 @@ function renderGrid() {
     }
   }
   attachPainter();
+  attachOffToggles();
+}
+
+function attachOffToggles() {
+  document.querySelectorAll('.off-toggle').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const d = btn.dataset.offDate;
+      if (!d) return;
+      const currentlyOff = state.dayOff.get(d) === true;
+      if (!currentlyOff) {
+        const slots = state.daySlots.get(d);
+        if (slots && slots.size > 0) {
+          if (!confirm('Mark this day off? Your painted hours will be cleared.')) return;
+        }
+        state.dayOff.set(d, true);
+        state.daySlots.set(d, new Set());
+      } else {
+        state.dayOff.set(d, false);
+      }
+      state.selectedDate = d;
+      state.dirty.add(d);
+      renderAll();
+    };
+  });
 }
 
 function renderBanner() {
@@ -1259,18 +1321,21 @@ function renderNotes() {
 }
 
 function renderSummary() {
-  let totalSlots = 0, dayCount = 0;
-  for (const [, s] of state.daySlots) {
+  let totalSlots = 0, dayCount = 0, offCount = 0;
+  for (const [d, s] of state.daySlots) {
+    if (state.dayOff.get(d)) continue;
     if (s.size > 0) { totalSlots += s.size; dayCount++; }
   }
+  for (const [, isOff] of state.dayOff) if (isOff) offCount++;
   const sum = document.getElementById('summary');
-  if (totalSlots === 0) {
-    sum.textContent = 'No hours';
-  } else {
+  const parts = [];
+  if (totalSlots > 0) {
     const hrs = (totalSlots * 0.5);
     const hrsStr = (hrs % 1 === 0) ? String(hrs) : hrs.toFixed(1).replace(/0+$/,'').replace(/\\.$/, '');
-    sum.innerHTML = '<span class="num">' + hrsStr + ' hr</span> across <span class="num">' + dayCount + '</span> day' + (dayCount===1?'':'s');
+    parts.push('<span class="num">' + hrsStr + ' hr</span> across <span class="num">' + dayCount + '</span> day' + (dayCount===1?'':'s'));
   }
+  if (offCount > 0) parts.push('<span class="num">' + offCount + '</span> off');
+  sum.innerHTML = parts.length ? parts.join(' · ') : 'No hours';
   document.getElementById('save').classList.toggle('dirty', state.dirty.size > 0);
 }
 
@@ -1314,6 +1379,7 @@ function attachPainter() {
   function onDown(e) {
     const q = e.target.closest && e.target.closest('.quarter');
     if (!q) return;
+    if (state.dayOff.get(q.dataset.date) === true) return;
     e.preventDefault();
     painting = true;
     warnedThisDrag = false;
@@ -1384,10 +1450,11 @@ async function doSave() {
   if (dirtyDays.length === 0) { toast('Nothing to save'); return; }
 
   const tasks = dirtyDays.map(d => {
-    const slots = Array.from(state.daySlots.get(d) || new Set());
+    const isOff = state.dayOff.get(d) === true;
+    const slots = isOff ? [] : Array.from(state.daySlots.get(d) || new Set());
     const notes = state.notes.get(d) || '';
     return fetch('/api/save', { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ token, date: d, srcTz: tzSel.value, slots, notes }) }).then(r => r.json());
+      body: JSON.stringify({ token, date: d, srcTz: tzSel.value, slots, notes, off: isOff }) }).then(r => r.json());
   });
 
   const results = await Promise.all(tasks);
@@ -1409,13 +1476,6 @@ async function doConfirm() {
   renderAll();
 }
 
-async function doClear() {
-  if (!state.selectedDate) return;
-  state.daySlots.set(state.selectedDate, new Set());
-  state.dirty.add(state.selectedDate);
-  renderAll();
-}
-
 document.getElementById('notes').addEventListener('input', (e) => {
   if (state.selectedDate) {
     state.notes.set(state.selectedDate, e.target.value);
@@ -1434,6 +1494,7 @@ async function loadStateForTz(tz) {
   }
   state.daySlots.clear();
   state.dayConfirmed.clear();
+  state.dayOff.clear();
   state.notes.clear();
   state.dirty.clear();
   for (const d of dates) {
@@ -1441,6 +1502,12 @@ async function loadStateForTz(tz) {
     const j = await r.json();
     if (!j.ok || !j.data) continue;
     const data = j.data;
+    if (data.off === true) {
+      // Off is stored against the CT date; project to src-tz date for display.
+      const { tzDate } = ctToTz(d, 0, tz);
+      state.dayOff.set(tzDate, true);
+      if (!state.daySlots.has(tzDate)) state.daySlots.set(tzDate, new Set());
+    }
     const ctSlots = data.slots || [];
     for (const ctSlot of ctSlots) {
       const { tzDate, tzSlot } = ctToTz(d, ctSlot, tz);
@@ -1481,7 +1548,6 @@ function utcFromWall(y, m, d, hh, mm, tz) {
 }
 
 document.getElementById('save').onclick = doSave;
-document.getElementById('clear').onclick = doClear;
 tzSel.onchange = async () => {
   state.selectedDate = todayInTz(tzSel.value);
   await loadStateForTz(tzSel.value);
@@ -1529,6 +1595,13 @@ main{padding:1.25rem;overflow-x:auto;max-width:1600px;margin:0 auto}
 .bar{position:absolute;top:0.2rem;bottom:0.2rem;background:var(--accent);border-radius:4px;cursor:default;box-shadow:0 1px 2px rgba(200,67,29,0.25);transition:background 0.1s}
 .bar.pending{background:repeating-linear-gradient(45deg,var(--accent-2) 0,var(--accent-2) 5px,var(--glow) 5px,var(--glow) 10px);opacity:0.85;box-shadow:none}
 .bar:hover{background:color-mix(in oklab,var(--accent) 80%,var(--ink))}
+.bar.off{background:repeating-linear-gradient(45deg,#c2422d 0,#c2422d 8px,#8a2a17 8px,#8a2a17 16px);box-shadow:none;display:flex;align-items:center;justify-content:center;color:#fff;font-family:var(--mono);font-size:11px;letter-spacing:0.15em;font-weight:600}
+.bar.off:hover{background:repeating-linear-gradient(45deg,#a8351f 0,#a8351f 8px,#6e2010 8px,#6e2010 16px)}
+.day-summary{font-family:var(--mono);font-size:11px;color:var(--ink-soft);letter-spacing:0.06em;text-transform:uppercase;margin:0 0 0.75rem 0;font-weight:500}
+.day-summary .on{color:var(--good)}
+.day-summary .off{color:#8a2a17}
+.day-summary .nr{color:var(--ink-soft)}
+.day-summary .n{color:var(--ink);font-weight:600}
 .coverage{margin-top:1rem;display:grid;grid-template-columns:8rem 1fr;gap:0.5rem;align-items:center}
 .coverage .closer{color:var(--ink-soft);font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:0.08em}
 .cov-track{position:relative;height:1.25rem;background:color-mix(in oklab,var(--bg-deep) 50%,white);border-radius:5px;overflow:hidden;min-width:60rem;display:flex;border:1px solid var(--rule)}
@@ -1553,6 +1626,7 @@ main{padding:1.25rem;overflow-x:auto;max-width:1600px;margin:0 auto}
 <div class="day-pills" id="pills"></div>
 <main>
   <div class="board">
+    <div class="day-summary" id="daySummary"></div>
     <div class="axis" id="axis"></div>
     <div class="gantt" id="gantt"></div>
     <div class="coverage" id="coverage"></div>
@@ -1661,20 +1735,43 @@ function renderGantt(state) {
   gantt.innerHTML = '';
   const closers = state.closers;
   const sorted = closers.slice().sort((a, b) => {
-    const sa = state.state[a.slug]?.slots || [];
-    const sb = state.state[b.slug]?.slots || [];
+    const da = state.state[a.slug];
+    const db = state.state[b.slug];
+    // Off closers sort to the bottom; otherwise by earliest start.
+    const aOff = !!(da && da.off);
+    const bOff = !!(db && db.off);
+    if (aOff !== bOff) return aOff ? 1 : -1;
+    const sa = da?.slots || [];
+    const sb = db?.slots || [];
     const minA = sa.length ? Math.min(...sa) : 999;
     const minB = sb.length ? Math.min(...sb) : 999;
     return minA - minB;
   });
+
+  let onCount = 0, offCount = 0;
   for (const c of sorted) {
     const data = state.state[c.slug];
     const lbl = document.createElement('div');
     lbl.className = 'closer'; lbl.textContent = c.name;
     const track = document.createElement('div');
     track.className = 'track';
-    if (data) {
+    if (data && data.off === true) {
+      offCount++;
+      const bar = document.createElement('div');
+      bar.className = 'bar off';
+      bar.style.left = '0%';
+      bar.style.width = '100%';
+      bar.textContent = 'OFF';
+      const offTime = data.markedOffAt ? new Date(data.markedOffAt).toLocaleString('en-US', { timeZone:'America/Chicago', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '';
+      const tip = '<strong>' + c.name + '</strong><br>Marked OFF for the day' + (offTime ? '<br>at ' + offTime + ' CT' : '') +
+        (data.notes ? '<br>"' + data.notes.replace(/[<>"]/g,'') + '"' : '');
+      bar.onmouseenter = (e) => showTip(e, tip);
+      bar.onmousemove = (e) => showTip(e, tip);
+      bar.onmouseleave = hideTip;
+      track.appendChild(bar);
+    } else if (data) {
       const ranges = bucket(data.slots || []);
+      if (ranges.length > 0) onCount++;
       const isConfirmed = !!data.confirmedAt;
       for (const [s, e] of ranges) {
         if (e <= SLOT_START || s >= SLOT_END) continue;
@@ -1698,6 +1795,13 @@ function renderGantt(state) {
   }
   if (sorted.length === 0) {
     gantt.innerHTML = '<div class="empty" style="grid-column:1/-1">No closers configured.</div>';
+  }
+  const nrCount = sorted.length - onCount - offCount;
+  const sumEl = document.getElementById('daySummary');
+  if (sumEl) {
+    sumEl.innerHTML = '<span class="on"><span class="n">' + onCount + '</span> on</span> · ' +
+      '<span class="off"><span class="n">' + offCount + '</span> off</span> · ' +
+      '<span class="nr"><span class="n">' + nrCount + '</span> no-response</span>';
   }
 }
 
