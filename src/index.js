@@ -1050,7 +1050,7 @@ main{padding:1.25rem 1rem 6rem;max-width:1400px;margin:0 auto}
 .info-note strong{font-family:var(--serif);font-style:italic;font-weight:500;color:var(--accent);margin-right:0.25rem}
 .schedule-card{background:var(--paper);border:1px solid var(--rule);border-radius:14px;padding:0.625rem;overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--ink-faint) transparent;box-shadow:0 1px 0 rgba(255,255,255,0.5) inset}
 .schedule-grid{display:grid;grid-template-columns:2.4rem repeat(var(--cols,3),minmax(120px,1fr));gap:4px;user-select:none;-webkit-user-select:none;touch-action:pan-y}
-.day-header{position:relative;text-align:center;padding:9px 4px 11px;cursor:pointer;border-radius:8px 8px 0 0;border-bottom:2px solid transparent;transition:background 0.15s,border-color 0.15s;display:flex;flex-direction:column;align-items:center;gap:3px}
+.day-header{position:relative;text-align:center;padding:6px 5px 10px;cursor:pointer;border-radius:8px 8px 0 0;border-bottom:2px solid transparent;transition:background 0.15s,border-color 0.15s;display:flex;flex-direction:column;align-items:stretch;gap:5px}
 .day-header:hover{background:color-mix(in oklab,var(--bg) 65%,white)}
 .day-header.today .day-name{color:var(--accent)}
 .day-header.has-hours .marker{background:var(--accent)}
@@ -1061,13 +1061,12 @@ main{padding:1.25rem 1rem 6rem;max-width:1400px;margin:0 auto}
 .day-header .day-name{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:var(--ink-soft);font-weight:500;line-height:1}
 .day-header .day-date{font-family:var(--serif);font-size:14px;font-weight:500;color:var(--ink);letter-spacing:-0.01em;line-height:1.1}
 .day-header .marker{display:inline-block;width:5px;height:5px;border-radius:999px;background:transparent;margin-top:1px}
-.off-toggle{position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:999px;border:1px solid var(--rule);background:var(--paper);color:var(--ink-soft);display:flex;align-items:center;justify-content:center;font-size:13px;line-height:1;font-family:var(--sans);cursor:pointer;transition:all 0.12s;padding:0;font-weight:500}
-.off-toggle:hover{border-color:#c2422d;color:#c2422d}
-.off-toggle.on{background:#c2422d;border-color:#c2422d;color:#fff;box-shadow:0 1px 3px rgba(140,40,20,0.3)}
+.off-toggle{display:block;width:100%;margin:0;padding:8px 4px;border-radius:8px;border:1.5px dashed color-mix(in oklab,#c2422d 45%,var(--rule));background:var(--paper);color:#8a2a17;font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;transition:all 0.12s;line-height:1.25;text-align:center}
+.off-toggle:hover{background:color-mix(in oklab,#c2422d 8%,var(--paper));border-color:#c2422d;color:#6e2010}
+.off-toggle.on{background:#c2422d;border:1.5px solid #8a2a17;color:#fff;box-shadow:0 2px 6px rgba(140,40,20,0.35);letter-spacing:0.14em}
 .off-toggle.on:hover{background:#a8351f}
 .day-cell.off{background:repeating-linear-gradient(45deg,color-mix(in oklab,#c2422d 14%,var(--paper)) 0,color-mix(in oklab,#c2422d 14%,var(--paper)) 8px,color-mix(in oklab,#c2422d 6%,var(--paper)) 8px,color-mix(in oklab,#c2422d 6%,var(--paper)) 16px);border-radius:4px;pointer-events:none}
 .day-cell.off .quarter{visibility:hidden}
-.off-badge{position:absolute;top:42px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-size:9.5px;font-weight:500;letter-spacing:0.12em;color:#8a2a17;background:color-mix(in oklab,#c2422d 18%,var(--paper));padding:2px 7px;border-radius:999px;border:1px solid color-mix(in oklab,#c2422d 35%,var(--rule));pointer-events:none}
 .hour-corner{position:sticky;left:0;background:var(--paper);z-index:2}
 .hour-label{display:flex;align-items:center;justify-content:flex-end;padding-right:6px;font-family:var(--mono);font-size:11px;color:var(--ink-soft);position:sticky;left:0;background:var(--paper);z-index:1;font-variant-numeric:tabular-nums}
 .day-cell{display:grid;grid-template-columns:repeat(2,1fr);gap:2px;padding:1px}
@@ -1223,11 +1222,11 @@ function renderGrid() {
     h.className = 'day-header' + (n === 0 ? ' today' : '') + (iso === state.selectedDate ? ' selected' : '') + (isOff ? ' off' : '');
     if (!isOff && (state.daySlots.get(iso) || new Set()).size > 0) h.classList.add('has-hours');
     if (state.dayConfirmed.get(iso)) h.classList.add('confirmed');
-    h.innerHTML = '<button type="button" class="off-toggle' + (isOff ? ' on' : '') + '" data-off-date="' + iso + '" title="' + (isOff ? 'Available again' : 'Mark unavailable') + '" aria-label="' + (isOff ? 'Mark available' : 'Mark off') + '">' + (isOff ? '✕' : '×') + '</button>' +
+    const offBtnLabel = isOff ? '✕ OFF — TAP TO UNDO' : '✕ MARK OFF / N/A';
+    h.innerHTML = '<button type="button" class="off-toggle' + (isOff ? ' on' : '') + '" data-off-date="' + iso + '">' + offBtnLabel + '</button>' +
                   '<span class="day-name">' + fmtDayName(n, iso) + '</span>' +
                   '<span class="day-date">' + fmtDayDate(iso) + '</span>' +
-                  '<span class="marker"></span>' +
-                  (isOff ? '<span class="off-badge">N/A</span>' : '');
+                  '<span class="marker"></span>';
     h.dataset.date = iso;
     h.onclick = (e) => {
       if (e.target.closest('.off-toggle')) return;
