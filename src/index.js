@@ -2124,6 +2124,8 @@ main{max-width:1600px;margin:0 auto;padding:1.25rem}
 .track{position:relative;height:1.6rem;background:color-mix(in oklab,var(--bg-deep) 50%,white);border-radius:5px;overflow:hidden;border:1px solid var(--rule)}
 .bar{position:absolute;top:0.15rem;bottom:0.15rem;background:var(--accent);border-radius:3px;box-shadow:0 1px 2px rgba(200,67,29,0.25)}
 .bar.pending{background:repeating-linear-gradient(45deg,var(--accent-2) 0,var(--accent-2) 5px,var(--glow) 5px,var(--glow) 10px);opacity:0.85;box-shadow:none}
+.bar.off{background:repeating-linear-gradient(45deg,#c2422d 0,#c2422d 8px,#8a2a17 8px,#8a2a17 16px);box-shadow:none;display:flex;align-items:center;justify-content:center;color:#fff;font-family:var(--mono);font-size:11px;letter-spacing:0.15em;font-weight:600;border-radius:3px}
+.closer-row.off .closer-name{color:#8a2a17}
 .hours{font-family:var(--mono);font-size:0.75rem;color:var(--ink);text-align:right;font-variant-numeric:tabular-nums;font-weight:500}
 .hours .unit{color:var(--ink-soft);margin-left:1px;font-size:0.6875rem}
 .coverage-row{display:grid;grid-template-columns:6.5rem 1fr 4rem;gap:0.5rem;align-items:center;padding-top:0.625rem;margin-top:0.5rem;border-top:1px solid var(--rule)}
@@ -2249,15 +2251,21 @@ function renderAxis() {
 function renderDayCard(state, dateIso, todayIso) {
   const closers = state.closers || [];
   const sorted = closers.slice().sort((a, b) => {
-    const sa = state.state[a.slug]?.slots || [];
-    const sb = state.state[b.slug]?.slots || [];
+    const da = state.state[a.slug];
+    const db = state.state[b.slug];
+    const aOff = !!(da && da.off);
+    const bOff = !!(db && db.off);
+    if (aOff !== bOff) return aOff ? 1 : -1;
+    const sa = da?.slots || [];
+    const sb = db?.slots || [];
     const minA = sa.length ? Math.min(...sa) : 999;
     const minB = sb.length ? Math.min(...sb) : 999;
     return minA - minB;
   });
-  let totalConfirmedSlots = 0, totalScheduledSlots = 0, activeCount = 0;
+  let totalConfirmedSlots = 0, totalScheduledSlots = 0, activeCount = 0, offCount = 0;
   for (const c of sorted) {
     const data = state.state[c.slug];
+    if (data && data.off === true) { offCount++; continue; }
     if (!data || !data.slots || data.slots.length === 0) continue;
     activeCount++;
     totalScheduledSlots += data.slots.length;
@@ -2277,6 +2285,13 @@ function renderDayCard(state, dateIso, todayIso) {
 
   const rows = sorted.map(c => {
     const data = state.state[c.slug];
+    if (data && data.off === true) {
+      const offTime = data.markedOffAt ? new Date(data.markedOffAt).toLocaleString('en-US', { timeZone:'America/Chicago', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '';
+      const tipHtml = '<strong>' + escHtml(c.name) + '</strong><br>Marked OFF for the day' + (offTime ? '<br>at ' + offTime + ' CT' : '') + (data.notes ? '<br>"' + escHtml(data.notes) + '"' : '');
+      return '<div class="closer-row off"><div class="closer-name">' + escHtml(c.name) + '</div>' +
+             '<div class="track"><div class="bar off" data-tip="' + encodeURIComponent(tipHtml) + '" style="left:0;width:100%">OFF</div></div>' +
+             '<div class="hours">—</div></div>';
+    }
     if (!data || !data.slots || data.slots.length === 0) {
       return '<div class="closer-row empty"><div class="closer-name">' + escHtml(c.name) + '</div><div class="track"></div><div class="hours">—</div></div>';
     }
@@ -2315,7 +2330,7 @@ function renderDayCard(state, dateIso, todayIso) {
     '<div class="daycard-head"><div class="left">' +
       '<div class="name">' + fmtName(dateIso, todayIso) + '</div>' +
       '<div class="date">' + fmtDate(dateIso) + '</div></div>' +
-      '<div class="stats">' + activeCount + ' on · ' + tcStr + 'h confirmed · ' + tsStr + 'h scheduled</div>' +
+      '<div class="stats">' + activeCount + ' on · ' + offCount + ' off · ' + tcStr + 'h confirmed · ' + tsStr + 'h scheduled</div>' +
     '</div>' +
     '<div class="axis"><div></div>' + renderAxis() + '<div></div></div>' +
     (rows.length === 0 ? '<div class="empty-day">No hours submitted for this day yet.</div>' : rows) +
