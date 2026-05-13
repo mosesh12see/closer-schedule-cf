@@ -47,6 +47,7 @@ const ROSTERS = {
     { slug: 'jeff',      name: 'Jeff Pearson',        defaultTz: 'America/Chicago' },
     { slug: 'diogo',     name: 'Diogo Correa',        defaultTz: 'America/Chicago' },
     { slug: 'jpena',     name: 'Josh Pena',           defaultTz: 'America/Chicago' },
+    { slug: 'juan',      name: 'Juan Gomez',          defaultTz: 'America/Chicago' },
   ],
   'capital-energy-az': [
     { slug: 'dayne',     name: 'Dayne Hall',          defaultTz: 'America/Phoenix' },
