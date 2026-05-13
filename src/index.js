@@ -2250,17 +2250,29 @@ function renderAxis() {
 
 function renderDayCard(state, dateIso, todayIso) {
   const closers = state.closers || [];
+  // Tier ordering: 0 = scheduled hours (ON), 1 = marked OFF, 2 = no response.
+  // Within ON: earliest start first. Within OFF: most recently marked first.
+  const tierOf = (data) => {
+    if (data && data.slots && data.slots.length > 0) return 0;
+    if (data && data.off === true) return 1;
+    return 2;
+  };
   const sorted = closers.slice().sort((a, b) => {
     const da = state.state[a.slug];
     const db = state.state[b.slug];
-    const aOff = !!(da && da.off);
-    const bOff = !!(db && db.off);
-    if (aOff !== bOff) return aOff ? 1 : -1;
-    const sa = da?.slots || [];
-    const sb = db?.slots || [];
-    const minA = sa.length ? Math.min(...sa) : 999;
-    const minB = sb.length ? Math.min(...sb) : 999;
-    return minA - minB;
+    const ta = tierOf(da), tb = tierOf(db);
+    if (ta !== tb) return ta - tb;
+    if (ta === 0) {
+      const minA = Math.min(...da.slots);
+      const minB = Math.min(...db.slots);
+      return minA - minB;
+    }
+    if (ta === 1) {
+      const ma = da.markedOffAt ? Date.parse(da.markedOffAt) : 0;
+      const mb = db.markedOffAt ? Date.parse(db.markedOffAt) : 0;
+      return mb - ma;
+    }
+    return 0;
   });
   let totalConfirmedSlots = 0, totalScheduledSlots = 0, activeCount = 0, offCount = 0;
   for (const c of sorted) {
