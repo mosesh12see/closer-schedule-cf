@@ -56,6 +56,11 @@ const ROSTERS = {
   'steve-iul': [
     { slug: 'steve',     name: 'Steve Lyman',         defaultTz: 'America/Denver' },
   ],
+  'dennis-fitness-transfers': [
+    { slug: 'missi',     name: 'Missi Metpro',        defaultTz: 'America/Chicago' },
+    { slug: 'steve',     name: 'Steve Metpro',        defaultTz: 'America/Chicago' },
+    { slug: 'adam',      name: 'Adam Metpro',         defaultTz: 'America/Chicago' },
+  ],
 };
 
 const roster = ROSTERS[campaignSlug];

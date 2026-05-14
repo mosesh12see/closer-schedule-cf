@@ -2175,8 +2175,9 @@ const SLOT_START = visibleHours[0] * 2;
 const SLOT_END = (visibleHours[1] + 1) * 2;
 const SLOT_COUNT = SLOT_END - SLOT_START;
 
+const OPEN_ACCESS = ${JSON.stringify(!!cfg.openAccess)};
 const adminToken = sessionStorage.getItem('adminToken_' + campaign);
-if (!adminToken) location.href = '/c/' + campaign + '/admin';
+if (!OPEN_ACCESS && !adminToken) location.href = '/c/' + campaign + '/admin';
 
 let cursorDate = null; // ISO date for the LEFT column ("today" by default)
 

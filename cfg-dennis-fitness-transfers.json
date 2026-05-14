@@ -1,0 +1,31 @@
+{
+  "name": "dennis-fitness-transfers",
+  "displayName": "Dennis Fitness Transfers",
+  "visibleHours": [
+    6,
+    23
+  ],
+  "masterKeyHash": "9f858e35880a86512b4627f19d35325ad23f188d9de0efd093deda1cfaa6c06a",
+  "adminCodeHash": "1238c3a87e2ddd214b929dbfd24ff1938fa7cbdcbae41db7edde301639903692",
+  "openAccess": true,
+  "closers": [
+    {
+      "slug": "missi",
+      "name": "Missi Metpro",
+      "defaultTz": "America/Chicago",
+      "pinHash": "ff7d6a1a39ecd915ef98e6aebed9e8583a932b61ec3c56eee08f6590b49b472f"
+    },
+    {
+      "slug": "steve",
+      "name": "Steve Metpro",
+      "defaultTz": "America/Chicago",
+      "pinHash": "3fbe068890d397f614ce668d2977d653988f6c95f5c8c675d604f823c510cb66"
+    },
+    {
+      "slug": "adam",
+      "name": "Adam Metpro",
+      "defaultTz": "America/Chicago",
+      "pinHash": "f5c73311102646766730ff88eaf8ed7888230d911e7bf2b68f74064a81ec3bba"
+    }
+  ]
+}
