@@ -2086,13 +2086,32 @@ codeEl.addEventListener('keydown', e => { if (e.key === 'Enter') goBtn.click(); 
 // ─── Admin view (all closers, two days side by side) ────────────────
 function ADMIN_HTML(campaign, cfg) {
   const visibleHours = cfg.visibleHours || [6, 23];
+  const isOpen = !!cfg.openAccess;
   return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(cfg.displayName)} — Admin</title>
-${BRAND_HEAD}
+<title>${esc(cfg.displayName)} — Schedule</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
-${BRAND_VARS}
-body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--ink);min-height:100vh}
+:root {
+  --bg: #fafafc;
+  --bg-deep: #f0f0f5;
+  --paper: #ffffff;
+  --ink: #1a1a2e;
+  --ink-soft: #64748b;
+  --ink-faint: rgba(26,26,46,0.18);
+  --rule: #f0f0f5;
+  --accent: #ec4899;
+  --accent-2: #f472b6;
+  --glow: #fbcfe8;
+  --good: #10b981;
+  --serif: 'Inter', -apple-system, sans-serif;
+  --sans: 'Inter', -apple-system, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--ink);min-height:100vh;-webkit-font-smoothing:antialiased}
 header{background:color-mix(in oklab,var(--bg) 78%,white);backdrop-filter:saturate(140%) blur(8px);-webkit-backdrop-filter:saturate(140%) blur(8px);padding:1rem 1.25rem;border-bottom:1px solid var(--rule);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.6rem;position:sticky;top:0;z-index:10}
 h1{margin:0;font-family:var(--serif);font-size:1.375rem;font-weight:500;letter-spacing:-0.01em;line-height:1}
 h1 em{font-style:italic;color:var(--accent);font-weight:400}
@@ -2145,15 +2164,14 @@ main{max-width:1600px;margin:0 auto;padding:1.25rem}
 <body>
 <header>
   <div>
-    <h1><em>Admin</em> · ${esc(cfg.displayName)}</h1>
+    <h1>${isOpen ? '' : '<em>Admin</em> · '}${esc(cfg.displayName)}</h1>
     <div class="meta">All times Central · auto-refresh 30s · <span id="lastSync"></span></div>
   </div>
   <div class="header-right">
     <button class="nav-btn" id="prevBtn">← Prev</button>
     <button class="nav-btn" id="todayBtn">Today</button>
     <button class="nav-btn" id="nextBtn">Next →</button>
-    <a class="lb-link" href="/c/${esc(campaign)}/leaderboard">🏆 Leaderboard</a>
-    <button class="nav-btn danger" id="logoutBtn">Logout</button>
+    ${isOpen ? '' : `<button class="nav-btn danger" id="logoutBtn">Logout</button>`}
   </div>
 </header>
 <main>
@@ -2383,7 +2401,8 @@ async function loadDays() {
 document.getElementById('prevBtn').onclick = () => { cursorDate = addDays(cursorDate || ctToday(), -1); loadDays(); };
 document.getElementById('nextBtn').onclick = () => { cursorDate = addDays(cursorDate || ctToday(), 1); loadDays(); };
 document.getElementById('todayBtn').onclick = () => { cursorDate = ctToday(); loadDays(); };
-document.getElementById('logoutBtn').onclick = () => {
+const logoutBtn = document.getElementById('logoutBtn');
+if (logoutBtn) logoutBtn.onclick = () => {
   sessionStorage.removeItem('adminToken_' + campaign);
   location.href = '/c/' + campaign + '/admin';
 };
