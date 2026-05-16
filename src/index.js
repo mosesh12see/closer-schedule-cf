@@ -632,25 +632,25 @@ async function htmlAdmin(env, campaign) {
 const BRAND_HEAD = `
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,400..600;1,400&family=Geist:wght@300..600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
 `;
 
 const BRAND_VARS = `
 :root {
-  --bg: #F6EBDC;
-  --bg-deep: #EFDDC4;
-  --paper: #FBF6EC;
-  --ink: #2A1B10;
-  --ink-soft: rgba(42,27,16,0.62);
-  --ink-faint: rgba(42,27,16,0.18);
-  --rule: rgba(42,27,16,0.14);
-  --accent: #C8431D;
-  --accent-2: #E8893A;
-  --glow: #FFB070;
-  --good: #2D7A5F;
-  --serif: "Newsreader", Georgia, serif;
-  --sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --bg: #fafafc;
+  --bg-deep: #f0f0f5;
+  --paper: #ffffff;
+  --ink: #1a1a2e;
+  --ink-soft: #64748b;
+  --ink-faint: rgba(26,26,46,0.18);
+  --rule: #f0f0f5;
+  --accent: #ec4899;
+  --accent-2: #f472b6;
+  --glow: #fbcfe8;
+  --good: #10b981;
+  --serif: 'Inter', -apple-system, sans-serif;
+  --sans: 'Inter', -apple-system, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 * { box-sizing: border-box; }
 body { font-feature-settings: "ss01", "cv11"; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
